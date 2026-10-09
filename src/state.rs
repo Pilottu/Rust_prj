@@ -1,10 +1,7 @@
-use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
-// Все структуры данных приложения (в памяти и для сохранения в SQLite) и
-// логика загрузки/сохранения состояния. PersistedAppState и
-// load_persisted_state специально НЕ публичные — наружу нужен только
-// load_initial_state(), остальное — деталь реализации сохранения.
+// Структуры состояния приложения. SQL-доступ и преобразование persisted state
+// находятся в repository.rs, чтобы модель не зависела от конкретного хранилища.
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RawLink {
@@ -86,126 +83,63 @@ pub struct AppState {
 }
 
 #[derive(Serialize, Deserialize)]
-struct PersistedAppState {
-    trees: Vec<CADTree>,
-    cad_links: Vec<CADLink>,
-    selected_node_id: i32,
-    active_focus_tree_id: i32,
+pub(crate) struct PersistedAppState {
+    pub(crate) trees: Vec<CADTree>,
+    pub(crate) cad_links: Vec<CADLink>,
+    pub(crate) selected_node_id: i32,
+    pub(crate) active_focus_tree_id: i32,
 }
 
-fn load_persisted_state() -> Option<PersistedAppState> {
-    let connection = Connection::open("cad_state.db").ok()?;
-    connection
-        .execute(
-            "CREATE TABLE IF NOT EXISTS app_state (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL)",
-            [],
-        )
-        .ok()?;
-    let payload: String = connection
-        .query_row("SELECT payload FROM app_state WHERE id = 1", [], |row| {
-            row.get(0)
-        })
-        .ok()?;
-    serde_json::from_str(&payload).ok()
-}
-
-pub fn save_persisted_state(state: &AppState) {
-    let persisted = PersistedAppState {
-        trees: state.trees.clone(),
-        cad_links: state.cad_links.clone(),
-        selected_node_id: state.selected_node_id,
-        active_focus_tree_id: state.active_focus_tree_id,
-    };
-    let Ok(payload) = serde_json::to_string(&persisted) else {
-        crate::historian::log("WARN", "Не удалось сериализовать состояние для сохранения");
-        return;
-    };
-    let Ok(connection) = Connection::open("cad_state.db") else {
-        crate::historian::log("WARN", "Не удалось открыть cad_state.db для сохранения");
-        return;
-    };
-    if connection
-        .execute(
-            "CREATE TABLE IF NOT EXISTS app_state (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL)",
-            [],
-        )
-        .is_ok()
-    {
-        if connection
-            .execute(
-                "INSERT INTO app_state (id, payload) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload",
-                params![payload],
-            )
-            .is_err()
-        {
-            crate::historian::log("WARN", "Не удалось записать состояние в cad_state.db");
-        }
-    } else {
-        crate::historian::log("WARN", "Не удалось создать таблицу в cad_state.db");
-    }
-}
-
-pub fn load_initial_state() -> AppState {
-    let default_state = AppState {
-        trees: vec![CADTree {
-            id: 1,
-            cad_x: 40.0,
-            cad_y: 80.0,
-            width: 250.0,
-            count: 1,
-            items: vec![RawItem {
-                id: 1,
-                text: "Основной узел".into(),
-                parent_id: 0,
-                is_expanded: true,
-                is_editing: false,
-                notes: vec!["Главный server управления".to_string()],
-                links: vec![],
-            }],
-            notes: vec![],
-        }],
-        cad_links: Vec::new(),
-        selected_node_id: 1,
-        active_focus_tree_id: 1,
-        history: Vec::new(),
-        linking_mode: false,
-        linking_source_node_id: -1,
-        linking_source_tree_id: -1,
-        selected_trees: Vec::new(),
-        selected_nodes: Vec::new(),
-    };
-
-    let loaded_from_db = load_persisted_state().is_some();
-    let result = load_persisted_state()
-        .map(|saved| AppState {
-            trees: saved.trees,
-            cad_links: saved.cad_links,
-            selected_node_id: saved.selected_node_id,
-            active_focus_tree_id: saved.active_focus_tree_id,
+impl PersistedAppState {
+    pub(crate) fn into_app_state(self) -> AppState {
+        AppState {
+            trees: self.trees,
+            cad_links: self.cad_links,
+            selected_node_id: self.selected_node_id,
+            active_focus_tree_id: self.active_focus_tree_id,
             history: Vec::new(),
             linking_mode: false,
             linking_source_node_id: -1,
             linking_source_tree_id: -1,
             selected_trees: Vec::new(),
             selected_nodes: Vec::new(),
-        })
-        .unwrap_or(default_state);
-
-    if loaded_from_db {
-        crate::historian::log(
-            "INFO",
-            &format!(
-                "Загружено из cad_state.db: деревьев={}, связей={}",
-                result.trees.len(),
-                result.cad_links.len()
-            ),
-        );
-    } else {
-        crate::historian::log(
-            "INFO",
-            "cad_state.db не найдена — стартуем с проекта по умолчанию",
-        );
+        }
     }
+}
 
-    result
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            trees: vec![CADTree {
+                id: 1,
+                cad_x: 40.0,
+                cad_y: 80.0,
+                width: 250.0,
+                count: 1,
+                items: vec![RawItem {
+                    id: 1,
+                    text: "Основной узел".into(),
+                    parent_id: 0,
+                    is_expanded: true,
+                    is_editing: false,
+                    notes: vec!["Главный server управления".to_string()],
+                    links: vec![],
+                }],
+                notes: vec![],
+            }],
+            cad_links: Vec::new(),
+            selected_node_id: 1,
+            active_focus_tree_id: 1,
+            history: Vec::new(),
+            linking_mode: false,
+            linking_source_node_id: -1,
+            linking_source_tree_id: -1,
+            selected_trees: Vec::new(),
+            selected_nodes: Vec::new(),
+        }
+    }
+}
+
+pub fn load_initial_state() -> AppState {
+    crate::repository::load_initial_state()
 }

@@ -1,7 +1,7 @@
 use std::{collections::HashMap, rc::Rc};
 use slint::{ModelRc, VecModel};
 
-use crate::state::{AppState, CADTree, ClipboardBranch, Point2D, RawItem, save_persisted_state};
+use crate::state::{AppState, CADTree, ClipboardBranch, Point2D, RawItem};
 use crate::{AppWindow, CADLine, MyTreeItem, NodeLinkInfo, NodeNoteInfo, SlintCADTree};
 
 // Вся геометрия/логика построения дерева и связей: раскладка узлов,
@@ -233,7 +233,7 @@ const OVAL_BORDER_ADJUST: f32 = 3.0;
 const TRIANGLE_ADJUST: f32 = -5.0;
 
 pub fn update_ui_models(app: &AppWindow, state: &AppState) {
-    save_persisted_state(state);
+    crate::repository::save_persisted_state(state);
     let mut slint_trees = Vec::new();
     let mut views_by_tree: HashMap<i32, Vec<MyTreeItem>> = HashMap::new();
 

@@ -1,0 +1,425 @@
+Windows PowerShell
+(C) Корпорация Майкрософт (Microsoft Corporation). Все права защищены.
+
+PS E:\Programm> cd rust_prj
+PS E:\Programm\rust_prj> cargo run(Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned) ; (& e:\Programm\Piton\example_pyside\.venv\Scripts\Act
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.05s
+     Running `target\debug\my_slint_app.exe`
+(.venv) PS E:\Programm\rust_prj> sqlite3 "E:\Programm\rust_prj\cad_state.db"
+SQLite version 3.53.4 2026-07-24 19:02:57 
+Enter ".help" for usage hints. 
+sqlite> .tables
+app_state
+sqlite> sqlite> .schema 
+CREATE TABLE app_state (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL); 
+sqlite> sqlite>
+ *  Журнал восстановлен 
+Windows PowerShell
+(C) Корпорация Майкрософт (Microsoft Corporation). Все права защищены.
+
+PS E:\Programm> (Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned) ; (& e:\Programm\Piton\example_pyside\.venv\Scripts\Activate.ps1)
+(.venv) PS E:\Programm> cd rust_prj
+(.venv) PS E:\Programm\rust_prj> cargo run
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.28s 
+     Running `target\debug\my_slint_app.exe` 
+(.venv) PS E:\Programm\rust_prj>  
+ *  Журнал восстановлен 
+Windows PowerShell
+(C) Корпорация Майкрософт (Microsoft Corporation). Все права защищены.
+
+PS E:\Programm> (Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned) ; (& e:\Programm\Piton\example_pyside\.venv\Scripts\Activate.ps1)        
+(.venv) PS E:\Programm> cd rust_prj
+(.venv) PS E:\Programm\rust_prj> cargo run
+   Compiling my_slint_app v0.1.0 (E:\Programm\rust_prj) 
+error[E0308]: mismatched types
+  --> src\repository.rs:65:28
+   |
+65 |         &connection_string(&CONFIG, database),
+   |          ----------------- ^^^^^^^ expected `&SqlServerConfig`, found `&OnceLock<SqlServerConfig>` 
+   |          |
+   |          arguments to this function are incorrect
+   |
+   = note: expected reference `&SqlServerConfig`
+              found reference `&OnceLock<SqlServerConfig>`
+note: function defined here
+  --> src\repository.rs:53:4
+   |
+53 | fn connection_string(config: &SqlServerConfig, database: &str) -> String {
+   |    ^^^^^^^^^^^^^^^^^ ------------------------
+ 
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied 
+   --> src\repository.rs:71:16
+    |
+ 71 |     connection.execute(sql, (), None)?;
+    |                ^^^^^^^          ---- unexpected argument #3 of type `std::option::Option<_>`
+    |
+note: method defined here
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:125:12
+    |
+125 |     pub fn execute(
+    |            ^^^^^^^
+help: remove the extra argument
+    |
+ 71 -     connection.execute(sql, (), None)?;
+ 71 +     connection.execute(sql, ())?;
+    |
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied 
+   --> src\repository.rs:184:42
+    |
+184 |     if let Some(mut cursor) = connection.execute(
+    |                                          ^^^^^^^
+...
+187 |         None,
+    |         ---- unexpected argument #3 of type `std::option::Option<_>`
+    |
+note: method defined here
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:125:12
+    |
+125 |     pub fn execute(
+    |            ^^^^^^^
+help: remove the extra argument
+    |
+186 -         (),
+187 -         None,
+186 +         (),
+    |
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied 
+   --> src\repository.rs:208:42
+    |
+208 |     if let Some(mut cursor) = connection.execute(
+    |                                          ^^^^^^^
+...
+211 |         None,
+    |         ---- unexpected argument #3 of type `std::option::Option<_>`
+    |
+note: method defined here
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:125:12
+    |
+125 |     pub fn execute(
+    |            ^^^^^^^
+help: remove the extra argument
+    |
+210 -         (),
+211 -         None,
+210 +         (),
+    |
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied 
+   --> src\repository.rs:233:42
+    |
+233 |     if let Some(mut cursor) = connection.execute(
+    |                                          ^^^^^^^
+...
+236 |         None,
+    |         ---- unexpected argument #3 of type `std::option::Option<_>`
+    |
+note: method defined here
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:125:12
+    |
+125 |     pub fn execute(
+    |            ^^^^^^^
+help: remove the extra argument
+    |
+235 -         (),
+236 -         None,
+235 +         (),
+    |
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied 
+   --> src\repository.rs:246:42
+    |
+246 |     if let Some(mut cursor) = connection.execute(
+    |                                          ^^^^^^^
+...
+249 |         None,
+    |         ---- unexpected argument #3 of type `std::option::Option<_>`
+    |
+note: method defined here
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:125:12
+    |
+125 |     pub fn execute(
+    |            ^^^^^^^
+help: remove the extra argument
+    |
+248 -         (),
+249 -         None,
+248 +         (),
+    |
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied 
+   --> src\repository.rs:261:42
+    |
+261 |     if let Some(mut cursor) = connection.execute(
+    |                                          ^^^^^^^
+...
+264 |         None,
+    |         ---- unexpected argument #3 of type `std::option::Option<_>`
+    |
+note: method defined here
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:125:12
+    |
+125 |     pub fn execute(
+    |            ^^^^^^^
+help: remove the extra argument
+    |
+263 -         (),
+264 -         None,
+263 +         (),
+    |
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied 
+   --> src\repository.rs:279:42
+    |
+279 |     if let Some(mut cursor) = connection.execute(
+    |                                          ^^^^^^^
+...
+282 |         None,
+    |         ---- unexpected argument #3 of type `std::option::Option<_>`
+    |
+note: method defined here
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:125:12
+    |
+125 |     pub fn execute(
+    |            ^^^^^^^
+help: remove the extra argument
+    |
+281 -         (),
+282 -         None,
+281 +         (),
+    |
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied 
+   --> src\repository.rs:304:42
+    |
+304 |     if let Some(mut cursor) = connection.execute(
+    |                                          ^^^^^^^
+...
+307 |         None,
+    |         ---- unexpected argument #3 of type `std::option::Option<_>`
+    |
+note: method defined here
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:125:12
+    |
+125 |     pub fn execute(
+    |            ^^^^^^^
+help: remove the extra argument
+    |
+306 -         (),
+307 -         None,
+306 +         (),
+    |
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied 
+   --> src\repository.rs:339:24
+    |
+339 |             connection.execute(
+    |                        ^^^^^^^
+...
+342 |                 None,
+    |                 ---- unexpected argument #3 of type `std::option::Option<_>`
+    |
+note: method defined here
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:125:12
+    |
+125 |     pub fn execute(
+    |            ^^^^^^^
+help: remove the extra argument
+    |
+341 -                 (&tree.id, &tree.cad_x, &tree.cad_y, &tree.width, &tree.count),
+342 -                 None,
+341 +                 (&tree.id, &tree.cad_x, &tree.cad_y, &tree.width, &tree.count),
+    |
+
+error[E0277]: the trait bound `bool: CElement` is not satisfied
+   --> src\repository.rs:351:84
+    |
+349 |                 connection.execute(
+    |                            ------- required by a bound introduced by this call
+350 |                     "INSERT INTO dbo.CadNodes (NodeId, TreeId, NodeOrder, NodeText, ParentNodeId, IsExpanded, IsEdit...
+351 |                     (&item.id, &tree.id, &(order as i32), &text, &item.parent_id, &item.is_expanded, &item.is_editing),
+    |                                                                                    ^^^^^^^^^^^^^^^^ the trait `CElement` is not implemented for `bool`    |
+    = help: the following other types implement trait `CElement`:
+              Box<(dyn InputParameter + 'static)>
+              CStr
+              CString
+              VarCell<&[<K as VarKind>::Element], K>
+              VarCell<&mut [<K as VarKind>::Element], K>
+              VarCell<Box<[<K as VarKind>::Element]>, K>
+              VarCell<[<K as VarKind>::Element; LENGTH], K>
+              WithDataType<T>
+            and 16 others
+    = note: required for `bool` to implement `InputParameter`
+    = note: required for `&bool` to implement `ParameterTupleElement`
+    = note: required for `(&i32, &i32, &i32, &VarCell<Box<[u16]>, WideText>, &i32, &bool, &bool)` to implement `ParameterCollectionRef`
+note: required by a bound in `odbc_api::Connection::<'c>::execute`
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:128:22
+    |
+125 |     pub fn execute(
+    |            ------- required by a bound in this associated function
+...
+128 |         params: impl ParameterCollectionRef,
+    |                      ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Connection::<'c>::execute`
+
+error[E0277]: the trait bound `bool: HasDataType` is not satisfied
+   --> src\repository.rs:351:84
+    |
+349 |                 connection.execute(
+    |                            ------- required by a bound introduced by this call
+350 |                     "INSERT INTO dbo.CadNodes (NodeId, TreeId, NodeOrder, NodeText, ParentNodeId, IsExpanded, IsEdit...
+351 |                     (&item.id, &tree.id, &(order as i32), &text, &item.parent_id, &item.is_expanded, &item.is_editing),
+    |                                                                                    ^^^^^^^^^^^^^^^^ the trait `HasDataType` is not implemented for `bool`
+    |
+    = help: the following other types implement trait `HasDataType`:
+              AnyBuffer
+              BinColumn
+              BlobParam<'_>
+              BlobRead<R>
+              BlobSlice<'_>
+              Box<(dyn InputParameter + 'static)>
+              CStr
+              CString
+            and 13 others
+    = note: required for `bool` to implement `InputParameter`
+    = note: required for `&bool` to implement `ParameterTupleElement`
+    = note: required for `(&i32, &i32, &i32, &VarCell<Box<[u16]>, WideText>, &i32, &bool, &bool)` to implement `ParameterCollectionRef`
+note: required by a bound in `odbc_api::Connection::<'c>::execute`
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:128:22
+    |
+125 |     pub fn execute(
+    |            ------- required by a bound in this associated function
+...
+128 |         params: impl ParameterCollectionRef,
+    |                      ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Connection::<'c>::execute`
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied 
+   --> src\repository.rs:349:28
+    |
+349 |                 connection.execute(
+    |                            ^^^^^^^
+...
+352 |                     None,
+    |                     ---- unexpected argument #3 of type `std::option::Option<_>`
+    |
+note: method defined here
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:125:12
+    |
+125 |     pub fn execute(
+    |            ^^^^^^^
+help: remove the extra argument
+    |
+351 -                     (&item.id, &tree.id, &(order as i32), &text, &item.parent_id, &item.is_expanded, &item.is_editing),
+352 -                     None,
+351 +                     (&item.id, &tree.id, &(order as i32), &text, &item.parent_id, &item.is_expanded, &item.is_editing),
+    |
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied 
+   --> src\repository.rs:360:28
+    |
+360 |                 connection.execute(
+    |                            ^^^^^^^
+...
+363 |                     None,
+    |                     ---- unexpected argument #3 of type `std::option::Option<_>`
+    |
+note: method defined here
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:125:12
+    |
+125 |     pub fn execute(
+    |            ^^^^^^^
+help: remove the extra argument
+    |
+362 -                     (&tree.id, &(order as i32), &note),
+363 -                     None,
+362 +                     (&tree.id, &(order as i32), &note),
+    |
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied 
+   --> src\repository.rs:369:32
+    |
+369 |                     connection.execute(
+    |                                ^^^^^^^
+...
+372 |                         None,
+    |                         ---- unexpected argument #3 of type `std::option::Option<_>`
+    |
+note: method defined here
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:125:12
+    |
+125 |     pub fn execute(
+    |            ^^^^^^^
+help: remove the extra argument
+    |
+371 -                         (&item.id, &(order as i32), &note),
+372 -                         None,
+371 +                         (&item.id, &(order as i32), &note),
+    |
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied 
+   --> src\repository.rs:377:32
+    |
+377 |                     connection.execute(
+    |                                ^^^^^^^
+...
+380 |                         None,
+    |                         ---- unexpected argument #3 of type `std::option::Option<_>`
+    |
+note: method defined here
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:125:12
+    |
+125 |     pub fn execute(
+    |            ^^^^^^^
+help: remove the extra argument
+    |
+379 -                         (&item.id, &link.id, &(order as i32), &link.target_node_id, &target_name),
+380 -                         None,
+379 +                         (&item.id, &link.id, &(order as i32), &link.target_node_id, &target_name),
+    |
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied 
+   --> src\repository.rs:387:24
+    |
+387 |             connection.execute(
+    |                        ^^^^^^^
+...
+390 |                 None,
+    |                 ---- unexpected argument #3 of type `std::option::Option<_>`
+    |
+note: method defined here
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:125:12
+    |
+125 |     pub fn execute(
+    |            ^^^^^^^
+help: remove the extra argument
+    |
+389 -                 (&link.id, &link.id_obj1, &link.id_obj2, &link.x1, &link.y1, &link.x2, &link.y2, &link.tree_id_1, &link.tree_id_2, &link.side1, &link.side2, &link.mid_x),
+390 -                 None,
+389 +                 (&link.id, &link.id_obj1, &link.id_obj2, &link.x1, &link.y1, &link.x2, &link.y2, &link.tree_id_1, &link.tree_id_2, &link.side1, &link.side2, &link.mid_x),
+    |
+
+error[E0061]: this method takes 2 arguments but 3 arguments were supplied 
+   --> src\repository.rs:394:20
+    |
+394 |         connection.execute(
+    |                    ^^^^^^^
+...
+397 |             None,
+    |             ---- unexpected argument #3 of type `std::option::Option<_>`
+    |
+note: method defined here
+   --> C:\Users\Pilot\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\odbc-api-8.1.4\src\connection.rs:125:12
+    |
+125 |     pub fn execute(
+    |            ^^^^^^^
+help: remove the extra argument
+    |
+396 -             (&state.selected_node_id, &state.active_focus_tree_id, &state.selected_node_id, &state.active_focus_tree_id),
+397 -             None,
+396 +             (&state.selected_node_id, &state.active_focus_tree_id, &state.selected_node_id, &state.active_focus_tree_id),
+    |
+
+Some errors have detailed explanations: E0061, E0277, E0308. 
+For more information about an error, try `rustc --explain E0061`.
+error: could not compile `my_slint_app` (bin "my_slint_app") due to 18 previous errors 
+(.venv) PS E:\Programm\rust_prj>

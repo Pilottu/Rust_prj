@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use std::{cell::RefCell, rc::Rc};
 
 use slint::ComponentHandle;
@@ -6,6 +6,7 @@ use slint::ComponentHandle;
 slint::include_modules!();
 
 mod state;
+mod repository;
 mod tree_ops;
 mod ui_bridge;
 mod win_native;
