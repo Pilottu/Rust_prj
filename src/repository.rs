@@ -488,13 +488,16 @@ fn migrate_legacy_history(
     if !path.exists() {
         return Ok(0);
     }
-    let mut count_cursor = connection
-        .execute("SELECT COUNT(*) FROM dbo.ApplicationLog", ())?
-        .ok_or("SQL Server did not return the history row count")?;
-    let mut count_row = count_cursor
-        .next_row()?
-        .ok_or("SQL Server returned no history count row")?;
-    if read_i32(&mut count_row, 1)? > 0 {
+    let history_count = {
+        let mut count_cursor = connection
+            .execute("SELECT COUNT(*) FROM dbo.ApplicationLog", ())?
+            .ok_or("SQL Server did not return the history row count")?;
+        let mut count_row = count_cursor
+            .next_row()?
+            .ok_or("SQL Server returned no history count row")?;
+        read_i32(&mut count_row, 1)?
+    };
+    if history_count > 0 {
         return Ok(0);
     }
 
