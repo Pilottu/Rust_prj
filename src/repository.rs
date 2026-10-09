@@ -99,7 +99,11 @@ fn connection_string(config: &SqlServerConfig, database: &str) -> String {
         config.driver,
         config.server,
         database,
-        if config.trusted_connection { "Yes" } else { "No" }
+        if config.trusted_connection {
+            "Yes"
+        } else {
+            "No"
+        }
     )
 }
 
@@ -571,10 +575,9 @@ pub fn load_initial_state() -> AppState {
         let connection = connect(&config().database)?;
         ensure_schema(&connection)?;
 
-        if let Err(error) = migrate_legacy_history(
-            &connection,
-            &project_root().join("historian.db"),
-        ) {
+        if let Err(error) =
+            migrate_legacy_history(&connection, &project_root().join("historian.db"))
+        {
             eprintln!("[ERROR] Не удалось перенести historian.db в SQL Server: {error}");
         }
 
