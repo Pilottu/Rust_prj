@@ -1,0 +1,161 @@
+import { SlintCADTree } from "cad_types.slint";
+import { LineEdit } from "std-widgets.slint";
+
+export component CADTreeBlock inherits Rectangle {
+    in property <SlintCADTree> tree;
+    in property <float> scale_factor: 1.0;
+    in property <bool> linking_mode: false;
+    in property <int> selected_node_id: -1;
+    in property <int> linking_source_node_id: -1;
+    in property <int> linking_source_tree_id: -1;
+    in property <float> linking_source_x: 0.0;
+    in property <float> linking_source_y: 0.0;
+    in property <float> linking_source_tree_x: 0.0;
+    in property <float> linking_source_tree_y: 0.0;
+    in property <int> linking_target_node_id: -1;
+    in property <int> linking_target_tree_id: -1;
+    in property <bool> link_confirm_visible: false;
+    in property <duration> animation_time: 0ms;
+    callback select_item(int, string, int);
+    callback toggle_expand(int, int);
+    callback start_drag(int, float, float);
+    callback show_menu(int, int, float, float);
+    callback item_double_clicked(int, int);
+        callback finish_rename(int, string, int);
+    callback hover_item(int, int, int);
+    callback select_link_target(int, int, float, float, float, float);
+    callback finish_link(int, int, int, int, float, float, float, float, float, float, float, float);
+
+    x: tree.cad_x * 1px * scale_factor;
+    y: tree.cad_y * 1px * scale_factor;
+    width: tree.width * 1px * scale_factor;
+    height: (tree.count * 32 + 36) * 1px * scale_factor;
+    border-width: 1px;
+    border-color: #ffaa0025;
+    background: #202026;
+    border-radius: 8px * scale_factor;
+
+    TouchArea {
+        x: 5px;
+        y: 5px;
+        width: 35px;
+        height: 35px;
+        z: 150;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                root.start_drag(root.tree.id, self.mouse-x / (1px * root.scale_factor), self.mouse-y / (1px * root.scale_factor));
+            }
+        }
+        Rectangle { x: 5px; y: 5px; width: 15px; height: 15px; background: #ffaa00; border-radius: 8px; }
+    }
+
+    Rectangle {
+        x: 8px * root.scale_factor;
+        y: 13px * root.scale_factor;
+        width: parent.width - 16px * root.scale_factor;
+        height: parent.height - 21px * root.scale_factor;
+        for item in root.tree.data : Rectangle {
+            if (item.depth > 0) : Rectangle {
+                x: 0px; y: 0px; width: 100%; height: 100%;
+                Rectangle {
+                    x: (item.parent_triangle_x - 8.0 + 10.0) * 1px * root.scale_factor;
+                    y: (item.parent_triangle_y - 8.0 + 5.0) * 1px * root.scale_factor;
+                    width: 1px * root.scale_factor;
+                    height: (item.self_triangle_y - item.parent_triangle_y - 13.0 + 5.0) * 1px * root.scale_factor;
+                    background: #ffffff30;
+                }
+                Rectangle {
+                    x: (item.parent_triangle_x - 8.0 + 18.0 + 10.0) * 1px * root.scale_factor;
+                    y: (item.self_triangle_y - 8.0 + 5.0) * 1px * root.scale_factor;
+                    width: (item.self_triangle_x - item.parent_triangle_x - 18.0) * 1px * root.scale_factor;
+                    height: 1px * root.scale_factor;
+                    background: #ffffff30;
+                }
+                Rectangle {
+                    x: (item.parent_triangle_x - 8.0 + 10.0) * 1px * root.scale_factor;
+                    y: (item.self_triangle_y - 8.0 - 14.0 + 5.0) * 1px * root.scale_factor;
+                    width: 18px * root.scale_factor;
+                    height: 15px * root.scale_factor;
+                    Path {
+                        width: 100%; height: 100%;
+                        stroke: #ffffff30;
+                        stroke-width: 1px * root.scale_factor;
+                        viewbox-width: 18; viewbox-height: 15;
+                        commands: "M 0 0 L 0 2 Q 0 15 18 15";
+                    }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        x: 8px * root.scale_factor;
+        y: 13px * root.scale_factor;
+        width: parent.width - 16px * root.scale_factor;
+        height: parent.height - 21px * root.scale_factor;
+        for item[item-index] in root.tree.data : Rectangle {
+            y: item-index * 32px * root.scale_factor + 5px * root.scale_factor;
+            height: 32px * root.scale_factor;
+            width: parent.width;
+            property <bool> is_link_endpoint: root.linking_mode && (((item.id == root.linking_source_node_id) && (root.tree.id == root.linking_source_tree_id)) || (root.link_confirm_visible && (item.id == root.linking_target_node_id) && (root.tree.id == root.linking_target_tree_id)));
+            if (item.has_children) : TouchArea {
+                x: (20px + item.depth * 24px + 10px) * root.scale_factor;
+                y: (-4px + 5px) * root.scale_factor;
+                width: 28px * root.scale_factor;
+                height: 40px * root.scale_factor;
+                z: 250;
+                clicked => { root.toggle_expand(item.id, root.tree.id); }
+                Text { text: item.is_expanded ? "▼ " : "▶ "; color: #ffffffba; font-size: 11px * root.scale_factor; x: 4px * root.scale_factor; }
+            }
+            TouchArea {
+                z: 200;
+                height: 32px * root.scale_factor;
+                width: parent.width;
+                clicked => {
+                    if (root.linking_mode) {
+                        if (item.id == root.linking_source_node_id && root.tree.id == root.linking_source_tree_id) {
+                            root.finish_link(root.linking_source_node_id, root.linking_source_tree_id, item.id, root.tree.id, root.linking_source_x, root.linking_source_y, item.self_triangle_x, item.self_triangle_y, root.linking_source_tree_x, root.linking_source_tree_y, root.tree.cad_x, root.tree.cad_y);
+                        } else {
+                            root.select_link_target(item.id, root.tree.id, item.self_triangle_x, item.self_triangle_y, root.tree.cad_x, root.tree.cad_y);
+                        }
+                    } else {
+                        root.select_item(item.id, item.text, root.tree.id);
+                    }
+                }
+                double-clicked => { root.item_double_clicked(item.id, root.tree.id); }
+                pointer-event(event) => {
+                    if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                        root.show_menu(item.id, root.tree.id, ((self.mouse-x / 1px) / root.scale_factor) + root.tree.cad_x, ((self.mouse-y / 1px) / root.scale_factor) + root.tree.cad_y);
+                    }
+                    if (event.kind == PointerEventKind.move) { root.hover_item(item.id, item-index, root.tree.id); }
+                }
+            }
+            Rectangle {
+                x: (24px + item.depth * 24px + 20px + 10px) * root.scale_factor;
+                y: (4px + 5px) * root.scale_factor;
+                width: (item.text_width + 20.0) * 1px * root.scale_factor;
+                height: 24px * root.scale_factor;
+                border-width: item.is_selected ? 2px * root.scale_factor : 1px * root.scale_factor;
+                border-color: is_link_endpoint ? #00ff00 : (item.is_selected ? #ffd700 : #ffffff25);
+                border-radius: 12px * root.scale_factor;
+                background: is_link_endpoint ? #00ff0015 : (item.is_selected ? #ffd70015 : #ffffff05);
+                Text {
+                    text: item.text;
+                    x: 10px * root.scale_factor;
+                    color: item.is_selected ? #ffffff : #e0e0e0;
+                    font-size: 14px * root.scale_factor;
+                    font-weight: item.is_selected ? 700 : 400;
+                    vertical-alignment: center;
+                }
+                    if (item.is_editing) : LineEdit {
+                        text: item.text;
+                        width: 100%;
+                        height: 100%;
+                        font-size: 13px * root.scale_factor;
+                        accepted(txt) => { root.finish_rename(item.id, txt, root.tree.id); }
+                        init => { self.focus(); self.select-all(); }
+                    }
+            }
+        }
+    }
+}

@@ -1,0 +1,299 @@
+import { Button, ListView, LineEdit, TextEdit } from "std-widgets.slint";
+import { NodeLinkInfo, NodeNoteInfo } from "cad_types.slint";
+
+// Окно свойств узла: вкладки "Примечания" / "Связи". active_tab — чисто
+// локальное состояние (Rust его не трогает). selected_note_index,
+// selected_link_index, note_editing, note_text — двусторонне связаны с
+// AppWindow, потому что их же напрямую выставляет Rust (ui.set_...) при
+// выборе/редактировании примечания.
+export component NodePropertiesPanel inherits Rectangle {
+    in property <[NodeNoteInfo]> notes;
+    in property <[NodeLinkInfo]> links;
+    in property <int> selected_node_id;
+    in property <float> scale_factor: 1.0;
+
+    in-out property <int> selected_note_index: -1;
+    in-out property <int> selected_link_index: -1;
+    in-out property <bool> note_editing: false;
+    in-out property <string> note_text: "";
+
+    property <int> active_tab: 0;
+
+    callback close();
+    callback select_note_from_properties(int);
+    callback note_double_clicked(int);
+    callback note_edit_finished(int, string);
+    callback add_note_to_properties(int, string);
+    callback delete_note_from_properties(int);
+    callback delete_link_from_properties(int);
+
+    width: 100%;
+    height: 100%;
+    background: #000000a0;
+    z: 250;
+    Rectangle {
+        width: 440px;
+        height: 400px;
+        background: #1e1e24;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: #ffffff20;
+        VerticalLayout {
+            padding: 15px;
+            spacing: 10px;
+            HorizontalLayout {
+                height: 32px;
+                spacing: 5px;
+                TouchArea {
+                    width: 50%;
+                    clicked => { root.active_tab = 0; }
+                    Rectangle {
+                        background: root.active_tab == 0 ? #ffd70020 : #ffffff05;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: root.active_tab == 0 ? #ffd700 : #ffffff10;
+                    }
+                    Text {
+                        text: " Примечания";
+                        color: root.active_tab == 0 ? #ffd700 : white;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                TouchArea {
+                    width: 50%;
+                    clicked => { root.active_tab = 1; }
+                    Rectangle {
+                        background: root.active_tab == 1 ? #ffd70020 : #ffffff05;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: root.active_tab == 1 ? #ffd700 : #ffffff10;
+                    }
+                    Text {
+                        text: " Связи";
+                        color: root.active_tab == 1 ? #ffd700 : white;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            if (root.active_tab == 0) : VerticalLayout {
+                spacing: 8px;
+                height: 250px;
+                if (root.notes.length == 0) : Text {
+                    text: "Нет примечаний у этого узла.";
+                    color: #ffffff60;
+                    font-size: 13px;
+                }
+                if (root.notes.length > 0) : ListView {
+                    height: 150px;
+                    for note[note-index] in root.notes : Rectangle {
+                        height: 34px;
+                        width: 100%;
+                        border-width: 1px;
+                        border-color: #ffffff15;
+                        border-radius: 4px;
+                        background: #ffffff08;
+                        property <bool> is_selected: root.selected_note_index == note-index;
+                        property <bool> is_editing: root.note_editing && root.selected_note_index == note-index;
+
+                        TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            clicked => {
+                                if (!is_editing) {
+                                    root.selected_note_index = note-index;
+                                    root.selected_link_index = -1;
+                                    root.select_note_from_properties(note-index);
+                                    root.note_editing = false;
+                                }
+                            }
+                            double-clicked => {
+                                root.selected_note_index = note-index;
+                                root.selected_link_index = -1;
+                                root.note_double_clicked(note-index);
+                            }
+                        }
+
+                        Rectangle {
+                            width: 100%;
+                            height: 100%;
+                            border-width: is_selected ? 2px * root.scale_factor : 0px;
+                            border-color: is_editing ? #00ff00 : #ffd700;
+                            border-radius: 4px;
+                            background: is_selected ? #ffd70010 : transparent;
+                        }
+
+                        if (is_editing) : LineEdit {
+                            text: note.note_text;
+                            width: 100%;
+                            height: 100%;
+                            font-size: 12px;
+                            accepted(txt) => {
+                                root.note_edit_finished(note-index, txt);
+                            }
+                            init => {
+                                self.focus();
+                                self.select-all();
+                            }
+                        }
+                        if (!is_editing) : VerticalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            padding-top: 3px;
+                            Text {
+                                text: "Примечание " + (note-index + 1) + ":";
+                                color: #ffd700;
+                                font-size: 10px;
+                            }
+                            Text {
+                                text: note.note_text;
+                                color: is_selected ? #ffd700 : #55ffff;
+                                font-size: 12px;
+                                max-width: 300px;
+                            }
+                        }
+                    }
+                }
+                // Разделитель
+                Rectangle {
+                    height: 1px;
+                    width: 100%;
+                    background: #ffffff20;
+                }
+                // Поле для ввода нового примечания
+                HorizontalLayout {
+                    height: 36px;
+                    spacing: 8px;
+                    Rectangle {
+                        vertical-stretch: 1;
+                        border-width: 1px;
+                        border-color: #ffffff30;
+                        border-radius: 4px;
+                        background: #ffffff08;
+                        TextEdit {
+                            text <=> root.note_text;
+                            placeholder-text: "Новое примечание...";
+                            height: 100%;
+                            width: 100%;
+                            wrap: word-wrap;
+                            font-size: 12px;
+                            key-pressed(event) => {
+                                if (event.text == Key.Return) {
+                                    if (root.note_text != "") {
+                                        root.add_note_to_properties(root.selected_node_id, root.note_text);
+                                        root.note_text = "";
+                                    }
+                                    return accept;
+                                }
+                                return reject;
+                            }
+                        }
+                    }
+                    Button {
+                        text: "Добавить";
+                        min-width: 70px;
+                        clicked => {
+                            if (root.note_text != "") {
+                                root.add_note_to_properties(root.selected_node_id, root.note_text);
+                                root.note_text = "";
+                            }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 32px;
+                    Button {
+                        text: "Удалить";
+                        enabled: root.notes.length > 0 && root.selected_note_index >= 0 && !root.note_editing;
+                        clicked => {
+                            root.delete_note_from_properties(root.selected_note_index);
+                            root.selected_note_index = -1;
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Button {
+                        text: "Закрыть";
+                        clicked => { root.close(); }
+                    }
+                }
+            }
+            if (root.active_tab == 1) : VerticalLayout {
+                spacing: 8px;
+                height: 250px;
+                if (root.links.length == 0) : Text {
+                    text: "Связи отсутствуют.";
+                    color: #ffffff60;
+                    font-size: 13px;
+                }
+                if (root.links.length > 0) : ListView {
+                    height: 220px;
+                    for link[link-index] in root.links : Rectangle {
+                        height: 34px;
+                        width: 100%;
+                        border-width: 1px;
+                        border-color: #ffffff15;
+                        border-radius: 4px;
+                        background: #ffffff08;
+                        property <bool> is_selected: root.selected_link_index == link-index;
+
+                        TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            clicked => {
+                                root.selected_link_index = link-index;
+                                root.selected_note_index = -1;
+                                root.note_editing = false;
+                            }
+                        }
+
+                        Rectangle {
+                            width: 100%;
+                            height: 100%;
+                            border-width: is_selected ? 2px * root.scale_factor : 0px;
+                            border-color: #ffd700;
+                            border-radius: 4px;
+                            background: is_selected ? #ffd70010 : transparent;
+                        }
+
+                        VerticalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            padding-top: 3px;
+                            Text {
+                                text: "Связь ID: " + link.id;
+                                color: #ffd700;
+                                font-size: 11px;
+                            }
+                            Text {
+                                text: "→ Объект ID: " + link.target_node_id + " (" + link.target_node_name + ")";
+                                color: #55ffff;
+                                font-size: 12px;
+                            }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 32px;
+                    Button {
+                        text: "Удалить связь";
+                        enabled: root.links.length > 0 && root.selected_link_index >= 0;
+                        clicked => {
+                            root.delete_link_from_properties(root.selected_link_index);
+                            root.selected_link_index = -1;
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Button {
+                        text: "Закрыть";
+                        clicked => { root.close(); }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,88 @@
+import { CADLine, SlintCADTree } from "cad_types.slint";
+import { CADLinkLine } from "cad_link_line.slint";
+import { CADTreeBlock } from "cad_tree_block.slint";
+
+// Полноценная "рабочая среда": объединяет отрисовку всех деревьев (CADTreeBlock)
+// и всех линий связи (CADLinkLine) в одном компоненте. app.slint инстанцирует
+// только его — вся раскладка деревьев/связей теперь живёт здесь.
+export component CADWorkspace inherits Rectangle {
+    in property <[SlintCADTree]> trees;
+    in property <[CADLine]> links;
+    in property <float> scale_factor: 1.0;
+    in property <int> selected_link_id: -1;
+    in property <bool> linking_mode: false;
+    in property <int> linking_source_node_id: -1;
+    in property <int> linking_source_tree_id: -1;
+    in property <float> linking_source_x: 0.0;
+    in property <float> linking_source_y: 0.0;
+    in property <float> linking_source_tree_x: 0.0;
+    in property <float> linking_source_tree_y: 0.0;
+    in property <int> linking_target_node_id: -1;
+    in property <int> linking_target_tree_id: -1;
+    in property <bool> link_confirm_visible: false;
+
+    // связи
+    callback link_clicked(int);
+    // id, screen_x, screen_y, id_obj1, id_obj2, side1 — всё, что нужно
+    // родителю, чтобы построить контекстное меню связи (см. app.slint)
+    callback link_context_menu(int, float, float, int, int, int);
+
+    // дерево / узлы
+    callback select_item(int, string, int);
+    callback toggle_expand(int, int);
+    callback start_drag(int, float, float);
+    callback show_menu(int, int, float, float);
+        callback finish_rename(int, string, int);
+    // id, index, tree_id, self_x, self_y, tree_cad_x, tree_cad_y — координаты нужны
+    // app.slint, чтобы правильно позиционировать всплывающую подсказку.
+    callback hover_item(int, int, int, float, float, float, float);
+    callback select_link_target(int, int, float, float, float, float);
+    callback finish_link(int, int, int, int, float, float, float, float, float, float, float, float);
+    // контекстное меню кружка перетаскивания дерева (tree_id, node_id, x, y)
+    callback show_root_menu(int, int, float, float);
+
+    // общее — панорамирование средней кнопкой мыши (и с деревьев, и со связей)
+    callback pan(PointerEventButton, PointerEventKind, length, length);
+
+    width: 100%;
+    height: 100%;
+
+    for link in root.links : CADLinkLine {
+        z: 10;
+        line: link;
+        scale_factor: root.scale_factor;
+        selected_link_id: root.selected_link_id;
+        clicked(id) => { root.link_clicked(id); }
+        context_menu(id, screen_x, screen_y) => {
+            root.link_context_menu(id, screen_x, screen_y, link.id_obj1, link.id_obj2, link.side1);
+        }
+        pan(btn, kind, x, y) => { root.pan(btn, kind, x, y); }
+    }
+
+    for tree in root.trees : CADTreeBlock {
+        tree: tree;
+        scale_factor: root.scale_factor;
+        linking_mode: root.linking_mode;
+        linking_source_node_id: root.linking_source_node_id;
+        linking_source_tree_id: root.linking_source_tree_id;
+        linking_source_x: root.linking_source_x;
+        linking_source_y: root.linking_source_y;
+        linking_source_tree_x: root.linking_source_tree_x;
+        linking_source_tree_y: root.linking_source_tree_y;
+        linking_target_node_id: root.linking_target_node_id;
+        linking_target_tree_id: root.linking_target_tree_id;
+        link_confirm_visible: root.link_confirm_visible;
+        select_item(id, text, tree_id) => { root.select_item(id, text, tree_id); }
+        toggle_expand(id, tree_id) => { root.toggle_expand(id, tree_id); }
+        start_drag(id, anchor_x, anchor_y) => { root.start_drag(id, anchor_x, anchor_y); }
+        show_menu(id, tree_id, menu_x, menu_y) => { root.show_menu(id, tree_id, menu_x, menu_y); }
+                finish_rename(id, value, tree_id) => { root.finish_rename(id, value, tree_id); }
+        hover_item(id, index, tree_id, self_x, self_y, tree_cad_x, tree_cad_y) => { root.hover_item(id, index, tree_id, self_x, self_y, tree_cad_x, tree_cad_y); }
+        select_link_target(id, tree_id, node_x, node_y, tree_x, tree_y) => { root.select_link_target(id, tree_id, node_x, node_y, tree_x, tree_y); }
+        finish_link(source_id, source_tree_id, target_id, target_tree_id, source_x, source_y, target_x, target_y, source_tree_x, source_tree_y, target_tree_x, target_tree_y) => {
+            root.finish_link(source_id, source_tree_id, target_id, target_tree_id, source_x, source_y, target_x, target_y, source_tree_x, source_tree_y, target_tree_x, target_tree_y);
+        }
+        show_root_menu(tree_id, node_id, x, y) => { root.show_root_menu(tree_id, node_id, x, y); }
+        pan(btn, kind, x, y) => { root.pan(btn, kind, x, y); }
+    }
+}

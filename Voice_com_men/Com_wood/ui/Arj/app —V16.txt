@@ -1,0 +1,442 @@
+import { Button, VerticalBox, LineEdit, ListView } from "std-widgets.slint";
+
+export struct MyTreeItem {
+    id: int,
+    text: string,
+    depth: int,
+    is_last: bool,
+    has_children: bool,
+    is_expanded: bool,
+    is_editing: bool,
+    parent_is_last: bool,
+    is_selected: bool,
+    note: string,
+    text_width: float,
+    smart_id: string,
+    line_mask: [int],
+    parent_id: int,
+    parent_triangle_x: float,
+    parent_triangle_y: float,
+    self_triangle_x: float,
+    self_triangle_y: float,
+}
+
+export struct CADLine {
+    id: int,
+    id_obj1: int,
+    id_obj2: int,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float
+}
+
+export component AppWindow inherits Window {
+    in_out property <float> scale_factor: 1.0;
+    
+    in_out property <float> tree1_cad_x: 40.0;
+    in_out property <float> tree1_cad_y: 80.0;
+    in_out property <float> tree1_width: 250.0;
+    
+    in_out property <int> tree1_count: 1;
+    in_out property <int> tree2_count: 1;
+    
+    in_out property <float> tree2_cad_x: 580.0;
+    in_out property <float> tree2_cad_y: 80.0;
+    in_out property <float> tree2_width: 250.0;
+    
+    in_out property <length> bg_offset_x: 0px;
+    in_out property <length> bg_offset_y: 0px;
+    
+    in_out property <[MyTreeItem]> tree1_data: [];
+    in_out property <[MyTreeItem]> tree2_data: [];
+    in_out property <[CADLine]> active_cad_links: [];
+    
+    in_out property <bool> menu_visible: false;
+    in_out property <length> menu_x: 0px;
+    in_out property <length> menu_y: 0px;
+    in_out property <int> menu_target_id: 0;
+    in_out property <int> menu_source_tree: 1;
+    in_out property <bool> is_linking_mode: false;
+    in_out property <int> linking_source_node_id: -1;
+    
+    in_out property <bool> properties_visible: false;
+    in_out property <string> properties_text: "";
+    in_out property <int> active_tab: 0;
+    
+    in_out property <string> tooltip_text: "";
+    in_out property <int> tooltip_index: -1;
+    in_out property <float> active_self_x: 0.0;
+    in_out property <float> active_self_y: 0.0;
+    property <bool> hover_active: false;
+    property <duration> hover_start_time: 0ms;
+    
+    in_out property <bool> tooltip_visible: root.hover_active && root.tooltip_index != -1 && (animation-tick() - root.hover_start_time >= 4000ms);
+    
+    property <duration> last_click_time: 0ms;
+    property <int> last_clicked_item_id: -1;
+    
+    property <length> drag_start_x: 0px;
+    property <length> drag_start_y: 0px;
+    property <bool> is_dragging_middle: false;
+    
+    property <bool> is_dragging_tree1: false;
+    property <bool> is_dragging_tree2: false;
+    property <float> tree_drag_anchor_x: 0.0;
+    property <float> tree_drag_anchor_y: 0.0;
+    
+    callback toggle_expand(int, int);
+    callback finish_rename(int, string, int);
+    callback select_item(int, string, int);
+    callback menu_action(string, int, int);
+    callback add_cad_link_mode(int, int);
+    callback item_double_clicked(int, int);
+    callback change_note(int, string, int);
+    callback hover_item(int, int, int);
+    callback key_esc_pressed();
+    callback trees_geometry_changed();
+    
+    callback undo_action();
+    callback copy_action();
+    callback paste_action();
+    
+    public function invoke_undo_action() { root.undo_action(); }
+    public function invoke_copy_action() { root.copy_action(); }
+    public function invoke_paste_action() { root.paste_action(); }
+    
+    min_width: 1000px; min_height: 700px;
+    preferred_width: 1300px; preferred_height: 850px;
+    background: #121215;
+    title: "Менеджер команд голосового управления (CAD Среда)";
+    TouchArea {
+        width: 100%; height: 100%;
+        clicked => { root.menu_visible = false; }
+        scroll-event(evt) => {
+            if (!root.is_dragging_middle && !root.is_dragging_tree1 && !root.is_dragging_tree2) {
+                if (evt.delta-y > 0) { root.scale_factor = Math.min(2.5, root.scale_factor + 0.05); }
+                else { root.scale_factor = Math.max(0.4, root.scale_factor - 0.05); }
+                root.trees_geometry_changed(); 
+            }
+            accept;
+        }
+        pointer-event(evt) => {
+            if (evt.kind == PointerEventKind.move) {
+                root.hover_active = false;
+                root.tooltip_index = -1;
+            }
+            if (evt.button == PointerEventButton.middle) {
+                if (evt.kind == PointerEventKind.down) {
+                    root.is_dragging_middle = true;
+                    root.drag_start_x = self.mouse-x; root.drag_start_y = self.mouse-y;
+                }
+                if (evt.kind == PointerEventKind.up) { root.is_dragging_middle = false; }
+            }
+            if (evt.kind == PointerEventKind.move && root.is_dragging_middle) {
+                root.bg_offset_x += self.mouse-x - root.drag_start_x;
+                root.bg_offset_y += self.mouse-y - root.drag_start_y;
+                root.drag_start_x = self.mouse-x; root.drag_start_y = self.mouse-y;
+                root.trees_geometry_changed();
+            }
+        }
+    }
+
+    if (root.is_dragging_tree1) : TouchArea {
+        width: 100%; height: 100%; z: 800;
+        pointer-event(evt) => {
+            if (evt.kind == PointerEventKind.up) { root.is_dragging_tree1 = false; }
+            if (evt.kind == PointerEventKind.move) {
+                let current_mouse_cad_x = (self.mouse-x - root.bg_offset_x) / (1px * root.scale_factor);
+                let current_mouse_cad_y = (self.mouse-y - root.bg_offset_y) / (1px * root.scale_factor);
+                root.tree1_cad_x = current_mouse_cad_x - root.tree_drag_anchor_x;
+                root.tree1_cad_y = current_mouse_cad_y - root.tree_drag_anchor_y;
+                root.trees_geometry_changed();
+            }
+        }
+    }
+
+    if (root.is_dragging_tree2) : TouchArea {
+        width: 100%; height: 100%; z: 800;
+        pointer-event(evt) => {
+            if (evt.kind == PointerEventKind.up) { root.is_dragging_tree2 = false; }
+            if (evt.kind == PointerEventKind.move) {
+                let current_mouse_cad_x = (self.mouse-x - root.bg_offset_x) / (1px * root.scale_factor);
+                let current_mouse_cad_y = (self.mouse-y - root.bg_offset_y) / (1px * root.scale_factor);
+                root.tree2_cad_x = current_mouse_cad_x - root.tree_drag_anchor_x;
+                root.tree2_cad_y = current_mouse_cad_y - root.tree_drag_anchor_y;
+                root.trees_geometry_changed();
+            }
+        }
+    }
+
+    if (root.is_linking_mode) : Rectangle {
+        x: (root.width - 450px) / 2; y: 15px; width: 450px; height: 35px;
+        background: #ffaa0020; border-width: 1px; border-color: #ffaa00; border-radius: 4px; z: 1000;
+        Text { text: "Режим CAD-связывания. Кликните целевую ноду (Esc для отмены)"; color: #ffaa00; horizontal-alignment: center; vertical-alignment: center; font-weight: 700; }
+    }
+    canvas := Rectangle {
+        x: root.bg_offset_x; y: root.bg_offset_y; width: 100%; height: 100%;
+
+        for line in root.active_cad_links : Path {
+            z: 10; width: 100%; height: 100%; stroke: #ffcc00; stroke-width: 2px * root.scale_factor;
+            commands: "M " + (line.x1 * root.scale_factor) + " " + (line.y1 * root.scale_factor) + 
+                      " L " + (line.x2 * root.scale_factor) + " " + (line.y2 * root.scale_factor);
+        }
+
+        w1_container := Rectangle {
+            x: root.tree1_cad_x * 1px * root.scale_factor; y: root.tree1_cad_y * 1px * root.scale_factor;
+            width: root.tree1_width * 1px * root.scale_factor; height: (root.tree1_count * 32 + 16) * 1px * root.scale_factor;
+            border-width: 1px; border-color: #ffaa0025; background: #202026; border-radius: 8px * root.scale_factor;
+            TouchArea {
+                x: 0px; y: 0px; width: 45px; height: 45px; z: 150;
+                pointer-event(evt) => {
+                    if (evt.kind == PointerEventKind.down && evt.button == PointerEventButton.left) {
+                        root.tree_drag_anchor_x = (self.mouse-x / 1px) / root.scale_factor;
+                        root.tree_drag_anchor_y = (self.mouse-y / 1px) / root.scale_factor;
+                        root.is_dragging_tree1 = true;
+                    }
+                }
+                Rectangle { 
+                    width: 15px; height: 15px; 
+                    background: #ffaa00; 
+                    border-radius: self.width / 2; 
+                    x: 6px; y: 6px; 
+                }
+            }
+
+            Rectangle {
+                x: 8px * root.scale_factor; y: 8px * root.scale_factor;
+                width: parent.width - 16px * root.scale_factor; height: parent.height - 16px * root.scale_factor;
+                for item[item-index] in root.tree1_data : Rectangle {
+                    if (item.depth > 0) : Rectangle {
+                        x: 0px; y: 0px; width: 100%; height: 100%;
+                        Rectangle { x: (item.parent_triangle_x - 8.0) * root.scale_factor * 1px; y: (item.parent_triangle_y - 8.0) * root.scale_factor * 1px; width: 1px * root.scale_factor; height: (item.self_triangle_y - item.parent_triangle_y - 13.0) * root.scale_factor * 1px; background: #ffffff30; }
+                        Rectangle { x: (item.parent_triangle_x - 8.0 + 18.0) * root.scale_factor * 1px; y: (item.self_triangle_y - 8.0) * root.scale_factor * 1px; width: (item.self_triangle_x - item.parent_triangle_x - 18.0) * root.scale_factor * 1px; height: 1px * root.scale_factor; background: #ffffff30; }
+                        Rectangle { x: (item.parent_triangle_x - 8.0) * root.scale_factor * 1px; y: (item.self_triangle_y - 8.0 - 14.0) * root.scale_factor * 1px; width: 18px * root.scale_factor; height: 15px * root.scale_factor; Path { width: 100%; height: 100%; stroke: #ffffff30; stroke-width: 1px * root.scale_factor; viewbox-width: 18; viewbox-height: 15; commands: "M 0 0 L 0 2 Q 0 15 18 15"; } }
+                    }
+                }
+            }
+            ListView {
+                x: 8px * root.scale_factor; y: 8px * root.scale_factor;
+                width: parent.width - 16px * root.scale_factor; height: parent.height - 16px * root.scale_factor;
+                for item[item-index] in root.tree1_data : Rectangle {
+                    height: 32px * root.scale_factor; width: parent.width;
+                    f1 := FocusScope {}
+                    row_touch1 := TouchArea {
+                        z: 200; height: 32px * root.scale_factor; width: parent.width;
+                        clicked => {
+                            root.menu_visible = false;
+                            if (animation-tick() - root.last_click_time < 350ms && root.last_clicked_item_id == item.id) { 
+                                root.item_double_clicked(item.id, 1); 
+                            }
+                            else { 
+                                root.select_item(item.id, item.text, 1); f1.focus(); 
+                            }
+                            root.last_click_time = animation-tick();
+                            root.last_clicked_item_id = item.id;
+                        }
+                        pointer-event(evt) => {
+                            if (evt.button == PointerEventButton.right && evt.kind == PointerEventKind.down) {
+                                root.select_item(item.id, item.text, 1); f1.focus();
+                                root.menu_target_id = item.id; root.menu_source_tree = 1;
+                                root.menu_x = self.mouse-x + w1_container.x + (item.depth * 24px) * root.scale_factor;
+                                root.menu_y = self.mouse-y + w1_container.y + (item-index * 32px) * root.scale_factor;
+                                root.menu_visible = true;
+                            }
+                            if (evt.kind == PointerEventKind.move) {
+                                if (root.tooltip_index != item.id) {
+                                    root.tooltip_index = item.id;
+                                    root.menu_source_tree = 1;
+                                    root.hover_item(item.id, item-index, 1);
+                                    root.hover_active = true;
+                                    root.hover_start_time = animation-tick();
+                                    root.active_self_x = item.self_triangle_x;
+                                    root.active_self_y = item.self_triangle_y;
+                                }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        x: (10px + item.depth * 24px) * root.scale_factor; y: 0px; width: 20px * root.scale_factor; height: 32px * root.scale_factor; z: 150;
+                        if (item.has_children) : TouchArea {
+                            width: 100%; height: 100%; clicked => { root.toggle_expand(item.id, 1); }
+                            Text { text: item.is_expanded ? "▼ " : "▶ "; color: #ffffffba; font-size: 11px * root.scale_factor; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+
+                    row_bg1 := Rectangle {
+                        x: (10px + item.depth * 24px + 20px) * root.scale_factor;
+                        border-width: item.is_selected ? 2px * root.scale_factor : 1px * root.scale_factor;
+                        border-color: item.is_selected ? #ffd700 : #ffffff25; border-radius: 12px * root.scale_factor;
+                        background: item.is_selected ? #ffd70015 : #ffffff05; height: 24px * root.scale_factor; y: 4px * root.scale_factor;
+                        width: item.is_editing ? 160px * root.scale_factor : (t_box1.preferred-width + 20px * root.scale_factor);
+                        HorizontalLayout {
+                            padding-left: 10px * root.scale_factor; padding-right: 10px * root.scale_factor; opacity: item.is_editing ? 0 : 1;
+                            t_box1 := Text { text: item.text; color: item.is_selected ? #ffffff : #e0e0e0; font-size: 14px * root.scale_factor; font-weight: item.is_selected ? 700 : 400; vertical-alignment: center; }
+                        }
+                        if (item.is_editing) : LineEdit {
+                            text: item.text; width: 100%; height: 100%; font-size: 13px * root.scale_factor;
+                            accepted(txt) => { root.finish_rename(item.id, txt, 1); }
+                            init => { self.focus(); self.select-all(); }
+                        }
+                    }
+                }
+            }
+        }
+        w2_container := Rectangle {
+            x: root.tree2_cad_x * 1px * root.scale_factor; y: root.tree2_cad_y * 1px * root.scale_factor;
+            width: root.tree2_width * 1px * root.scale_factor; height: (root.tree2_count * 32 + 16) * 1px * root.scale_factor;
+            border-width: 1px; border-color: #00aaff25; background: #202026; border-radius: 8px * root.scale_factor;
+            TouchArea {
+                x: 0px; y: 0px; width: 45px; height: 45px; z: 150;
+                pointer-event(evt) => {
+                    if (evt.kind == PointerEventKind.down && evt.button == PointerEventButton.left) {
+                        root.tree_drag_anchor_x = (self.mouse-x / 1px) / root.scale_factor;
+                        root.tree_drag_anchor_y = (self.mouse-y / 1px) / root.scale_factor;
+                        root.is_dragging_tree2 = true;
+                    }
+                }
+                Rectangle { 
+                    width: 15px; height: 15px; 
+                    background: #00aaff; 
+                    border-radius: self.width / 2; 
+                    x: 6px; y: 6px; 
+                }
+            }
+
+            Rectangle {
+                x: 8px * root.scale_factor; y: 8px * root.scale_factor;
+                width: parent.width - 16px * root.scale_factor; height: parent.height - 16px * root.scale_factor;
+                for item[item-index] in root.tree2_data : Rectangle {
+                    if (item.depth > 0) : Rectangle {
+                        x: 0px; y: 0px; width: 100%; height: 100%;
+                        Rectangle { x: (item.parent_triangle_x - 8.0) * root.scale_factor * 1px; y: (item.parent_triangle_y - 8.0) * root.scale_factor * 1px; width: 1px * root.scale_factor; height: (item.self_triangle_y - item.parent_triangle_y - 13.0) * root.scale_factor * 1px; background: #ffffff30; }
+                        Rectangle { x: (item.parent_triangle_x - 8.0 + 18.0) * root.scale_factor * 1px; y: (item.self_triangle_y - 8.0) * root.scale_factor * 1px; width: (item.self_triangle_x - item.parent_triangle_x - 18.0) * root.scale_factor * 1px; height: 1px * root.scale_factor; background: #ffffff30; }
+                        Rectangle { x: (item.parent_triangle_x - 8.0) * root.scale_factor * 1px; y: (item.self_triangle_y - 8.0 - 14.0) * root.scale_factor * 1px; width: 18px * root.scale_factor; height: 15px * root.scale_factor; Path { width: 100%; height: 100%; stroke: #ffffff30; stroke-width: 1px * root.scale_factor; viewbox-width: 18; viewbox-height: 15; commands: "M 0 0 L 0 2 Q 0 15 18 15"; } }
+                    }
+                }
+            }
+
+            ListView {
+                x: 8px * root.scale_factor; y: 8px * root.scale_factor;
+                width: parent.width - 16px * root.scale_factor; height: parent.height - 16px * root.scale_factor;
+                for item[item-index] in root.tree2_data : Rectangle {
+                    height: 32px * root.scale_factor; width: parent.width;
+                    f2 := FocusScope {}
+                    row_touch2 := TouchArea {
+                        z: 200; height: 32px * root.scale_factor; width: parent.width;
+                        clicked => {
+                            root.menu_visible = false;
+                            if (animation-tick() - root.last_click_time < 350ms && root.last_clicked_item_id == item.id) { 
+                                root.item_double_clicked(item.id, 2); 
+                            }
+                            else { 
+                                root.select_item(item.id, item.text, 2); f2.focus(); 
+                            }
+                            root.last_click_time = animation-tick();
+                            root.last_clicked_item_id = item.id;
+                        }
+                        pointer-event(evt) => {
+                            if (evt.button == PointerEventButton.right && evt.kind == PointerEventKind.down) {
+                                root.select_item(item.id, item.text, 2); f2.focus();
+                                root.menu_target_id = item.id; root.menu_source_tree = 2;
+                                root.menu_x = self.mouse-x + w2_container.x + (item.depth * 24px) * root.scale_factor;
+                                root.menu_y = self.mouse-y + w2_container.y + (item-index * 32px) * root.scale_factor;
+                                root.menu_visible = true;
+                            }
+                            if (evt.kind == PointerEventKind.move) {
+                                if (root.tooltip_index != item.id) {
+                                    root.tooltip_index = item.id;
+                                    root.menu_source_tree = 2;
+                                    root.hover_item(item.id, item-index, 2);
+                                    root.hover_active = true;
+                                    root.hover_start_time = animation-tick();
+                                    root.active_self_x = item.self_triangle_x;
+                                    root.active_self_y = item.self_triangle_y;
+                                }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        x: (10px + item.depth * 24px) * root.scale_factor; y: 0px; width: 20px * root.scale_factor; height: 32px * root.scale_factor; z: 150;
+                        if (item.has_children) : TouchArea {
+                            width: 100%; height: 100%; clicked => { root.toggle_expand(item.id, 2); }
+                            Text { text: item.is_expanded ? "▼ " : "▶ "; color: #ffffffba; font-size: 11px * root.scale_factor; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+
+                    row_bg2 := Rectangle {
+                        x: (10px + item.depth * 24px + 20px) * root.scale_factor;
+                        border-width: item.is_selected ? 2px * root.scale_factor : 1px * root.scale_factor;
+                        border-color: item.is_selected ? #ffd700 : #ffffff25; border-radius: 12px * root.scale_factor;
+                        background: item.is_selected ? #ffd70015 : #ffffff05; height: 24px * root.scale_factor; y: 4px * root.scale_factor;
+                        width: item.is_editing ? 160px * root.scale_factor : (t_box2.preferred-width + 20px * root.scale_factor);
+                        HorizontalLayout {
+                            padding-left: 10px * root.scale_factor; padding-right: 10px * root.scale_factor; opacity: item.is_editing ? 0 : 1;
+                            t_box2 := Text { text: item.text; color: item.is_selected ? #ffffff : #e0e0e0; font-size: 14px * root.scale_factor; font-weight: item.is_selected ? 700 : 400; vertical-alignment: center; }
+                        }
+                        if (item.is_editing) : LineEdit {
+                            text: item.text; width: 100%; height: 100%; font-size: 13px * root.scale_factor;
+                            accepted(txt) => { root.finish_rename(item.id, txt, 2); }
+                            init => { self.focus(); self.select-all(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ИСПРАВЛЕНО: Координата y изменена на -23px, чтобы поднять тултип ровно на 20px выше (было +30px)
+    if (root.tooltip_index != -1 && root.tooltip_visible) : Rectangle {
+        x: root.menu_source_tree == 1 ? root.tree1_cad_x * 1px * root.scale_factor + (root.active_self_x + 70.0) * root.scale_factor * 1px : root.tree2_cad_x * 1px * root.scale_factor + (root.active_self_x + 70.0) * root.scale_factor * 1px;
+        y: root.tree1_cad_y * 1px * root.scale_factor + (root.active_self_y - 1.0) * root.scale_factor * 1px - self.height - 23px * root.scale_factor;
+        width: Math.min(220px, g_text.preferred-width + 16px); background: #2d2d35; border-radius: 4px; border-width: 1px; border-color: #ffffff25; z: 999;
+        g_text := Text { text: root.tooltip_text; color: #ffd700; font-size: 12px; x: 8px; y: 4px; wrap: word-wrap; width: parent.width - 16px; }
+        height: g_text.preferred-height + 8px;
+    }
+
+    if (root.properties_visible) : Rectangle {
+        width: 100%; height: 100%; background: #000000a0; z: 250;
+        Rectangle {
+            width: 440px; height: 350px; background: #1e1e24; border-radius: 8px; border-width: 1px; border-color: #ffffff20;
+            VerticalLayout {
+                padding: 15px; spacing: 12px;
+                HorizontalLayout {
+                    height: 32px; spacing: 5px;
+                    TouchArea { width: 50%; clicked => { root.active_tab = 0; }
+                        Rectangle { background: root.active_tab == 0 ? #ffd70020 : #ffffff05; border-radius: 4px; border-width: 1px; border-color: root.active_tab == 0 ? #ffd700 : #ffffff10; }
+                        Text { text: " Примечание"; color: root.active_tab == 0 ? #ffd700 : white; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                    TouchArea { width: 50%; clicked => { root.active_tab = 1; }
+                        Rectangle { background: root.active_tab == 1 ? #ffd70020 : #ffffff05; border-radius: 4px; border-width: 1px; border-color: root.active_tab == 1 ? #ffd700 : #ffffff10; }
+                        Text { text: " Связи узла"; color: root.active_tab == 1 ? #ffd700 : white; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                }
+                VerticalLayout {
+                    spacing: 8px; visible: root.active_tab == 0; height: root.active_tab == 0 ? 190px : 0px;
+                    note_f := LineEdit { text: root.properties_text; placeholder-text: "Параметры узла..."; height: 36px; accepted => { root.change_note(root.menu_target_id, self.text, root.menu_source_tree); } }
+                    Rectangle { vertical-stretch: 1; }
+                }
+                HorizontalLayout {
+                    spacing: 10px; alignment: end; height: 32px;
+                    Button { text: "Сохранить изменения"; clicked => { root.change_note(root.menu_target_id, note_f.text, root.menu_source_tree); root.properties_visible = false; } }
+                    Button { text: "Закрыть"; clicked => { root.properties_visible = false; } }
+                }
+            }
+        }
+    }
+
+    if (root.menu_visible) : Rectangle {
+        x: root.menu_x; y: root.menu_y; width: 175px; height: 162px; background: #1e1e24; border-radius: 4px; border-width: 1px; border-color: #ffffff20; z: 200;
+        VerticalBox {
+            padding: 5px; spacing: 2px;
+            TouchArea { height: 28px; clicked => { root.menu_visible = false; root.menu_action("add", root.menu_target_id, root.menu_source_tree); }
+                Text { text: "Добавить узел"; color: white; font-size: 13px; x: 8px; vertical-alignment: center; } }
+            TouchArea { height: 28px; clicked => { root.menu_visible = false; root.add_cad_link_mode(root.menu_target_id, root.menu_source_tree); }
+                Text { text: " Добавить связь..."; color: #55ffff; font-size: 13px; x: 8px; vertical-alignment: center; } }
+            TouchArea { height: 28px; clicked => { root.menu_visible = false; root.menu_action("rename", root.menu_target_id, root.menu_source_tree); }
+                Text { text: "✏ Переименовать"; color: white; font-size: 13px; x: 8px; vertical-alignment: center; } }
+            TouchArea { height: 28px; clicked => { root.menu_visible = false; root.menu_action("properties", root.menu_target_id, root.menu_source_tree); }
+                Text { text: " Свойства узла"; color: #ffd700; font-size: 13px; x: 8px; vertical-alignment: center; } }
+            TouchArea { height: 28px; clicked => { root.menu_visible = false; root.menu_action("delete", root.menu_target_id, root.menu_source_tree); }
+                Text { text: " Удалить узел"; color: #ff5555; font-size: 13px; x: 8px; vertical-alignment: center; } }
+        }
+    }
+}

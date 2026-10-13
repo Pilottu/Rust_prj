@@ -1,0 +1,706 @@
+use std::{cell::RefCell, rc::Rc};
+use slint::{ComponentHandle, ModelRc, VecModel};
+
+use crate::state::{AppState, CADLink, CADTree, ClipboardBranch, RawItem, RawLink};
+use crate::tree_ops::{
+    build_node_links, build_node_notes, find_closest_free_pos, pack_branch, unpack_branch,
+    update_ui_models,
+};
+use crate::win_native::{get_clipboard_text, set_clipboard_text};
+use crate::AppWindow;
+
+// Вся проводка между Slint-колбэками (то, что приходит от UI) и Rust-состоянием.
+// Одна функция — wire_callbacks — просто подписывается на каждый app.on_xxx(...),
+// логика внутри каждого обработчика не менялась при переносе из main.rs, только
+// сам код стал доступен через use выше вместо того, чтобы жить в одном файле.
+
+pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
+    let app_weak = app.as_weak();
+
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_toggle_expand(move |node_id, tree_id| {
+        let mut st = _s.borrow_mut();
+        if let Some(t) = st.trees.iter_mut().find(|t| t.id == tree_id) {
+            if let Some(i) = t.items.iter_mut().find(|i| i.id == node_id) {
+                i.is_expanded = !i.is_expanded;
+            }
+        }
+        update_ui_models(&_a_w.unwrap(), &st);
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_trees_geometry_changed(move || {
+        update_ui_models(&_a_w.unwrap(), &_s.borrow());
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_update_tree_position(move |tree_id, nx, ny| {
+        let mut st = _s.borrow_mut();
+        if let Some(t) = st.trees.iter_mut().find(|t| t.id == tree_id) {
+            t.cad_x = nx;
+            t.cad_y = ny;
+        }
+        update_ui_models(&_a_w.unwrap(), &st);
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_resolve_tree_collision(move |tree_id| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+        let (mut cur_x, mut cur_y, mut mw, mut mh) = (0.0, 0.0, 250.0, 48.0);
+        if let Some(t) = st.trees.iter().find(|t| t.id == tree_id) {
+            cur_x = t.cad_x;
+            cur_y = t.cad_y;
+            mw = t.width;
+            mh = (t.count * 32 + 16) as f32;
+        }
+        let (fx, fy) = find_closest_free_pos(tree_id, cur_x, cur_y, mw, mh, &st.trees);
+        if let Some(t) = st.trees.iter_mut().find(|t| t.id == tree_id) {
+            t.cad_x = fx;
+            t.cad_y = fy;
+        }
+        update_ui_models(&ui, &st);
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_add_main_tree(move |target_center_x, target_center_y| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+        let n_id = st.trees.iter().map(|t| t.id).max().unwrap_or(0) + 1;
+        let target_x = target_center_x - 125.0;
+        let target_y = target_center_y - 24.0;
+        let (fx, fy) = find_closest_free_pos(n_id, target_x, target_y, 250.0, 48.0, &st.trees);
+        st.trees.push(CADTree {
+            id: n_id,
+            cad_x: fx,
+            cad_y: fy,
+            width: 250.0,
+            count: 1,
+            items: vec![RawItem {
+                id: n_id * 1000,
+                text: format!("Основной узел {}", n_id),
+                parent_id: 0,
+                is_expanded: true,
+                is_editing: false,
+                notes: vec![],
+                links: vec![],
+            }],
+        });
+        update_ui_models(&ui, &st);
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_hover_item(move |node_id, idx, tree_id| {
+        let ui = _a_w.unwrap();
+        let st = _s.borrow();
+        if node_id != -1 {
+            if let Some(t) = st.trees.iter().find(|t| t.id == tree_id) {
+                if let Some(item) = t.items.iter().find(|i| i.id == node_id) {
+                    let mut notes = Vec::new();
+                    for note in &item.notes {
+                        if !note.is_empty() {
+                            notes.push(note.clone());
+                        }
+                    }
+                    let tooltip = if notes.is_empty() {
+                        "Примечание отсутствует.".to_string()
+                    } else {
+                        notes.join(", ")
+                    };
+                    ui.set_tooltip_text(tooltip.into());
+                    ui.set_tooltip_index(idx);
+                }
+            }
+        } else {
+            ui.set_tooltip_index(-1);
+        }
+    });
+    let _a_w = app_weak.clone();
+    app.on_show_tree_menu(move |node_id, tree_id, screen_x, screen_y| {
+        let ui = _a_w.unwrap();
+        ui.set_menu_target_id(node_id);
+        ui.set_menu_source_tree(tree_id);
+        ui.set_menu_x(screen_x);
+        ui.set_menu_y(screen_y);
+        ui.set_link_menu_visible(false);
+        ui.set_menu_visible(true);
+    });
+    let _a_w = app_weak.clone();
+    app.on_select_link_target(move |node_id, tree_id, node_x, node_y, tree_x, tree_y| {
+        let ui = _a_w.unwrap();
+        ui.set_linking_target_node_id(node_id);
+        ui.set_linking_target_tree_id(tree_id);
+        ui.set_linking_target_x(node_x);
+        ui.set_linking_target_y(node_y);
+        ui.set_linking_target_tree_x(tree_x);
+        ui.set_linking_target_tree_y(tree_y);
+        ui.set_link_confirm_visible(true);
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_select_item(move |node_id, _txt, tree_id| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+        st.active_focus_tree_id = tree_id;
+        st.selected_node_id = node_id;
+
+        if let Some(t) = st.trees.iter().find(|t| t.id == tree_id) {
+            if let Some(_i) = t.items.iter().find(|i| i.id == node_id) {
+                ui.set_properties_text("".into());
+                ui.set_selected_property_link_index(-1);
+                ui.set_selected_property_note_index(-1);
+                ui.set_note_editing(false);
+            }
+        }
+        update_ui_models(&ui, &st);
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_select_note_from_properties(move |note_index| {
+        let ui = _a_w.unwrap();
+        let st = _s.borrow();
+        let tree_id = st.active_focus_tree_id;
+        let node_id = st.selected_node_id;
+        if let Some(t) = st.trees.iter().find(|t| t.id == tree_id) {
+            if let Some(i) = t.items.iter().find(|i| i.id == node_id) {
+                if note_index >= 0 && (note_index as usize) < i.notes.len() {
+                    ui.set_properties_text(i.notes[note_index as usize].clone().into());
+                    ui.set_note_editing(false);
+                }
+            }
+        }
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_note_double_clicked(move |note_index| {
+        let ui = _a_w.unwrap();
+        let st = _s.borrow();
+        let tree_id = st.active_focus_tree_id;
+        let node_id = st.selected_node_id;
+        if let Some(t) = st.trees.iter().find(|t| t.id == tree_id) {
+            if let Some(i) = t.items.iter().find(|i| i.id == node_id) {
+                if note_index >= 0 && (note_index as usize) < i.notes.len() {
+                    ui.set_selected_property_note_index(note_index);
+                    ui.set_note_editing(true);
+                }
+            }
+        }
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_note_edit_finished(move |note_index, new_text| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+        let tree_id = st.active_focus_tree_id;
+        let node_id = st.selected_node_id;
+
+        if let Some(tree) = st.trees.iter_mut().find(|t| t.id == tree_id) {
+            if let Some(item) = tree.items.iter_mut().find(|i| i.id == node_id) {
+                if note_index >= 0 && (note_index as usize) < item.notes.len() {
+                    let trimmed = new_text.trim();
+                    if !trimmed.is_empty() {
+                        item.notes[note_index as usize] = trimmed.to_string();
+                    }
+                }
+            }
+        }
+
+        ui.set_note_editing(false);
+        ui.set_selected_property_note_index(-1);
+        update_ui_models(&ui, &st);
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_item_double_clicked(move |node_id, tree_id| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+        if let Some(t) = st.trees.iter_mut().find(|t| t.id == tree_id) {
+            for i in t.items.iter_mut() {
+                i.is_editing = i.id == node_id;
+            }
+        }
+        update_ui_models(&ui, &st);
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_finish_rename(move |node_id, txt, tree_id| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+        if let Some(t) = st.trees.iter_mut().find(|t| t.id == tree_id) {
+            if let Some(i) = t.items.iter_mut().find(|i| i.id == node_id) {
+                i.text = txt.to_string();
+                i.is_editing = false;
+            }
+        }
+        update_ui_models(&ui, &st);
+    });
+    let _s = state.clone();
+    app.on_change_note(move |node_id, note, tree_id| {
+        let mut st = _s.borrow_mut();
+        if let Some(t) = st.trees.iter_mut().find(|t| t.id == tree_id) {
+            if let Some(i) = t.items.iter_mut().find(|i| i.id == node_id) {
+                if i.notes.is_empty() {
+                    i.notes.push(note.to_string());
+                } else {
+                    i.notes[0] = note.to_string();
+                }
+            }
+        }
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_menu_action(move |act, n_id, tree_id| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+        let max_node_id = st
+            .trees
+            .iter()
+            .flat_map(|t| t.items.iter().map(|i| i.id))
+            .max()
+            .unwrap_or(0)
+            + 1;
+        if let Some(t) = st.trees.iter_mut().find(|t| t.id == tree_id) {
+            match act.as_str() {
+                "add" => {
+                    if let Some(p) = t.items.iter_mut().find(|i| i.id == n_id) {
+                        p.is_expanded = true;
+                    }
+                    t.items.push(RawItem {
+                        id: max_node_id,
+                        text: format!("Новый узел {}", max_node_id),
+                        parent_id: n_id,
+                        is_expanded: true,
+                        is_editing: true,
+                        notes: vec![],
+                        links: vec![],
+                    });
+                    st.selected_node_id = max_node_id;
+                }
+                "delete" => {
+                    fn del(pid: i32, vec: &mut Vec<RawItem>) {
+                        let sub: Vec<i32> = vec
+                            .iter()
+                            .filter(|i| i.parent_id == pid)
+                            .map(|i| i.id)
+                            .collect();
+                        for s in sub {
+                            del(s, vec);
+                        }
+                        vec.retain(|i| i.id != pid);
+                    }
+                    if n_id % 1000 != 0 {
+                        del(n_id, &mut t.items);
+                    }
+                }
+                "rename" => {
+                    if let Some(i) = t.items.iter_mut().find(|i| i.id == n_id) {
+                        i.is_editing = true;
+                    }
+                }
+                "properties" => {
+                    if let Some(_i) = t.items.iter().find(|i| i.id == n_id) {
+                        ui.set_properties_text("".into());
+                        ui.set_properties_visible(true);
+                        ui.set_selected_property_link_index(-1);
+                        ui.set_selected_property_note_index(-1);
+                        ui.set_selected_node_id(n_id);
+                        ui.set_selected_tree_id(tree_id);
+                        ui.set_note_editing(false);
+                        let links = build_node_links(&st, tree_id, n_id);
+                        let notes = build_node_notes(&st, tree_id, n_id);
+                        ui.set_properties_links(ModelRc::from(Rc::new(VecModel::from(links))));
+                        ui.set_properties_notes(ModelRc::from(Rc::new(VecModel::from(notes))));
+                    }
+                }
+                _ => {}
+            }
+        }
+        update_ui_models(&ui, &st);
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_undo_action(move || {
+        let mut st = _s.borrow_mut();
+        if st.active_focus_tree_id == 1 {
+            if let Some(p) = st.history.pop() {
+                st.trees = p;
+            }
+        }
+        update_ui_models(&_a_w.unwrap(), &st);
+    });
+    let _s = state.clone();
+    app.on_copy_action(move || {
+        let st = _s.borrow();
+        let tree_id = st.active_focus_tree_id;
+        if let Some(t) = st.trees.iter().find(|t| t.id == tree_id) {
+            let sel = st.selected_node_id;
+            if let Some(i) = t.items.iter().find(|i| i.id == sel) {
+                if i.is_editing {
+                    set_clipboard_text(&i.text);
+                } else {
+                    let branch = ClipboardBranch {
+                        root_item: i.clone(),
+                        children: pack_branch(i.id, &t.items),
+                    };
+                    if let Ok(j) = serde_json::to_string(&branch) {
+                        set_clipboard_text(&format!("TREE_BRANCH_DATA:{}", j));
+                    }
+                }
+            }
+        }
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_paste_action(move || {
+        if let Some(txt) = get_clipboard_text() {
+            let (tree_id, sel, is_edit, old) = {
+                let st = _s.borrow();
+                (
+                    st.active_focus_tree_id,
+                    st.selected_node_id,
+                    st.trees
+                        .iter()
+                        .flat_map(|t| t.items.iter())
+                        .find(|i| i.id == st.selected_node_id)
+                        .map(|i| i.is_editing)
+                        .unwrap_or(false),
+                    st.trees.clone(),
+                )
+            };
+            let mut st = _s.borrow_mut();
+            if is_edit {
+                if let Some(t) = st.trees.iter_mut().find(|t| t.id == tree_id) {
+                    if let Some(i) = t.items.iter_mut().find(|i| i.id == sel) {
+                        i.text = txt;
+                    }
+                }
+            } else if txt.starts_with("TREE_BRANCH_DATA:") {
+                st.history.push(old);
+                let json = txt.chars().skip(17).collect::<String>();
+                if let Ok(br) = serde_json::from_str::<ClipboardBranch>(&json) {
+                    if let Some(t) = st.trees.iter_mut().find(|t| t.id == tree_id) {
+                        unpack_branch(br, sel, &mut t.items);
+                        if let Some(p) = t.items.iter_mut().find(|i| i.id == sel) {
+                            p.is_expanded = true;
+                        }
+                    }
+                }
+            }
+            update_ui_models(&_a_w.unwrap(), &st);
+        }
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_add_cad_link_mode(
+        move |node_id, tree_id, source_x, source_y, tree_x, tree_y| {
+            let ui = _a_w.unwrap();
+            let mut st = _s.borrow_mut();
+
+            st.linking_mode = true;
+            st.linking_source_node_id = node_id;
+            st.linking_source_tree_id = tree_id;
+
+            ui.set_is_linking_mode(true);
+            ui.set_linking_source_node_id(node_id);
+            ui.set_linking_source_tree_id(tree_id);
+            ui.set_linking_source_x(source_x);
+            ui.set_linking_source_y(source_y);
+            ui.set_linking_source_tree_x(tree_x);
+            ui.set_linking_source_tree_y(tree_y);
+
+            update_ui_models(&ui, &st);
+        },
+    );
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_finish_cad_link(
+        move |source_node_id,
+              source_tree_id,
+              target_node_id,
+              target_tree_id,
+              source_x,
+              source_y,
+              target_x,
+              target_y,
+              src_tree_x,
+              src_tree_y,
+              tgt_tree_x,
+              tgt_tree_y| {
+            let ui = _a_w.unwrap();
+            let mut st = _s.borrow_mut();
+
+            if source_node_id == target_node_id && source_tree_id == target_tree_id {
+                st.linking_mode = false;
+                st.linking_source_node_id = -1;
+                st.linking_source_tree_id = -1;
+                ui.set_is_linking_mode(false);
+                ui.set_linking_source_node_id(-1);
+                update_ui_models(&ui, &st);
+                return;
+            }
+
+            let already_linked = st
+                .trees
+                .iter()
+                .find(|t| t.id == source_tree_id)
+                .and_then(|t| t.items.iter().find(|i| i.id == source_node_id))
+                .map(|i| i.links.iter().any(|l| l.target_node_id == target_node_id))
+                .unwrap_or(false);
+
+            if already_linked {
+                update_ui_models(&ui, &st);
+                return;
+            }
+
+            let new_link_id = st.cad_links.iter().map(|l| l.id).max().unwrap_or(0) + 1;
+
+            let side1 = if src_tree_x < tgt_tree_x { 0 } else { 1 };
+            let side2 = if tgt_tree_x < src_tree_x { 0 } else { 1 };
+
+            let node1_width = st
+                .trees
+                .iter()
+                .find(|t| t.id == source_tree_id)
+                .and_then(|t| t.items.iter().find(|i| i.id == source_node_id))
+                .map(|i| i.text.chars().count() as f32 * 7.2 + 20.0 + 20.0)
+                .unwrap_or(60.0);
+
+            let node2_width = st
+                .trees
+                .iter()
+                .find(|t| t.id == target_tree_id)
+                .and_then(|t| t.items.iter().find(|i| i.id == target_node_id))
+                .map(|i| i.text.chars().count() as f32 * 7.2 + 20.0 + 20.0)
+                .unwrap_or(60.0);
+
+            let x1_final = if side1 == 0 {
+                source_x + src_tree_x + node1_width
+            } else {
+                source_x + src_tree_x
+            };
+            let x2_final = if side2 == 0 {
+                target_x + tgt_tree_x + node2_width
+            } else {
+                target_x + tgt_tree_x
+            };
+
+            let mid_x = (x1_final + x2_final) / 2.0;
+
+            st.cad_links.push(CADLink {
+                id: new_link_id,
+                id_obj1: source_node_id,
+                id_obj2: target_node_id,
+                x1: x1_final,
+                y1: source_y + src_tree_y,
+                x2: x2_final,
+                y2: target_y + tgt_tree_y,
+                tree_id_1: source_tree_id,
+                tree_id_2: target_tree_id,
+                side1,
+                side2,
+                mid_x,
+            });
+
+            let source_text = st
+                .trees
+                .iter()
+                .find(|t| t.id == source_tree_id)
+                .and_then(|t| t.items.iter().find(|i| i.id == source_node_id))
+                .map(|i| i.text.clone())
+                .unwrap_or_default();
+
+            let target_text = st
+                .trees
+                .iter()
+                .find(|t| t.id == target_tree_id)
+                .and_then(|t| t.items.iter().find(|i| i.id == target_node_id))
+                .map(|i| i.text.clone())
+                .unwrap_or_default();
+
+            if let Some(tree) = st.trees.iter_mut().find(|t| t.id == source_tree_id) {
+                if let Some(item) = tree.items.iter_mut().find(|i| i.id == source_node_id) {
+                    item.links.push(RawLink {
+                        id: new_link_id,
+                        target_node_id,
+                        target_node_name: target_text,
+                    });
+                }
+            }
+
+            if let Some(tree) = st.trees.iter_mut().find(|t| t.id == target_tree_id) {
+                if let Some(item) = tree.items.iter_mut().find(|i| i.id == target_node_id) {
+                    item.links.push(RawLink {
+                        id: new_link_id,
+                        target_node_id: source_node_id,
+                        target_node_name: source_text,
+                    });
+                }
+            }
+
+            st.linking_mode = false;
+            st.linking_source_node_id = -1;
+            st.linking_source_tree_id = -1;
+
+            ui.set_is_linking_mode(false);
+            ui.set_linking_source_node_id(-1);
+
+            update_ui_models(&ui, &st);
+        },
+    );
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_delete_link(move |link_id| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+
+        st.cad_links.retain(|l| l.id != link_id);
+        for t in st.trees.iter_mut() {
+            for it in t.items.iter_mut() {
+                it.links.retain(|l| l.id != link_id);
+            }
+        }
+
+        update_ui_models(&ui, &st);
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    // Удаление всего дерева целиком (через контекстное меню оранжевого кружка).
+    // Помимо самого дерева, нужно вычистить все связи (cad_links), которые
+    // касались узлов этого дерева — иначе останутся "битые" ссылки на несуществующие узлы.
+    app.on_delete_tree(move |tree_id| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+
+        let removed_link_ids: Vec<i32> = st
+            .cad_links
+            .iter()
+            .filter(|l| l.tree_id_1 == tree_id || l.tree_id_2 == tree_id)
+            .map(|l| l.id)
+            .collect();
+
+        st.cad_links
+            .retain(|l| l.tree_id_1 != tree_id && l.tree_id_2 != tree_id);
+
+        for t in st.trees.iter_mut() {
+            if t.id == tree_id {
+                continue;
+            }
+            for it in t.items.iter_mut() {
+                it.links.retain(|l| !removed_link_ids.contains(&l.id));
+            }
+        }
+
+        st.trees.retain(|t| t.id != tree_id);
+
+        if st.active_focus_tree_id == tree_id {
+            if let Some(first) = st.trees.first() {
+                st.active_focus_tree_id = first.id;
+            }
+        }
+        st.selected_node_id = -1;
+
+        update_ui_models(&ui, &st);
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_delete_selected_link(move || {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+
+        let selected_id = ui.get_selected_link_id();
+        if selected_id != -1 {
+            st.cad_links.retain(|l| l.id != selected_id);
+            for t in st.trees.iter_mut() {
+                for it in t.items.iter_mut() {
+                    it.links.retain(|l| l.id != selected_id);
+                }
+            }
+            ui.set_selected_link_id(-1);
+            update_ui_models(&ui, &st);
+        }
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_delete_link_from_properties(move |property_link_index| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+
+        let links = build_node_links(&st, st.active_focus_tree_id, st.selected_node_id);
+
+        if property_link_index >= 0 && (property_link_index as usize) < links.len() {
+            let link_info = &links[property_link_index as usize];
+            let link_id = link_info.id;
+
+            st.cad_links.retain(|l| l.id != link_id);
+            for t in st.trees.iter_mut() {
+                for it in t.items.iter_mut() {
+                    it.links.retain(|l| l.id != link_id);
+                }
+            }
+
+            update_ui_models(&ui, &st);
+            ui.set_selected_property_link_index(-1);
+        }
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_add_note_to_properties(move |node_id, note_text| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+
+        let tree_id = st.active_focus_tree_id;
+        if let Some(tree) = st.trees.iter_mut().find(|t| t.id == tree_id) {
+            if let Some(item) = tree.items.iter_mut().find(|i| i.id == node_id) {
+                let trimmed = note_text.trim();
+                if !trimmed.is_empty() {
+                    item.notes.push(trimmed.to_string());
+                    update_ui_models(&ui, &st);
+                    ui.set_properties_text("".into());
+                    ui.set_selected_property_note_index(-1);
+                }
+            }
+        }
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_save_note_from_properties(move |_node_id, _note_index, _note_text| {
+        // Этот обработчик больше не нужен, но оставляем для совместимости
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_delete_note_from_properties(move |property_note_index| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+
+        let tree_id = st.active_focus_tree_id;
+        let node_id = st.selected_node_id;
+
+        if let Some(tree) = st.trees.iter_mut().find(|t| t.id == tree_id) {
+            if let Some(item) = tree.items.iter_mut().find(|i| i.id == node_id) {
+                if property_note_index >= 0 && (property_note_index as usize) < item.notes.len() {
+                    item.notes.remove(property_note_index as usize);
+                    update_ui_models(&ui, &st);
+                    ui.set_selected_property_note_index(-1);
+                    ui.set_properties_text("".into());
+                    ui.set_note_editing(false);
+                }
+            }
+        }
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_key_esc_pressed(move || {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+
+        st.linking_mode = false;
+        st.linking_source_node_id = -1;
+        st.linking_source_tree_id = -1;
+
+        ui.set_is_linking_mode(false);
+        ui.set_linking_source_node_id(-1);
+
+        update_ui_models(&ui, &st);
+    });
+}

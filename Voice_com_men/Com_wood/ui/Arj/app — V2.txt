@@ -1,0 +1,316 @@
+import { Button, VerticalBox, LineEdit, ListView } from "std-widgets.slint";
+
+struct MyTreeItem {
+    id: int,
+    text: string,
+    depth: int,
+    is-last: bool,
+    has-children: bool,
+    is-expanded: bool,
+    is-editing: bool,
+    parent-is-last: bool,
+    is-selected: bool,
+    note: string,
+    text_width: float,
+    smart_id: string,
+    line_mask: [int],
+    parent-id: int,
+    parent-triangle-x: float,
+    parent-triangle-y: float,
+    self-triangle-x: float,
+    self-triangle-y: float,
+}
+
+struct NodeLinkItem {
+    id: int,
+    target_id: int,
+    target_name: string,
+}
+
+export component AppWindow inherits Window {
+    in-out property <float> debug-timer: 4.0;
+
+    in-out property <float> scale-factor: 1.0;
+    in-out property <length> tree-offset-x: 0px;
+    in-out property <length> tree-offset-y: 0px;
+    property <length> drag-start-x: 0px;
+    property <length> drag-start-y: 0px;
+    property <bool> is-dragging-middle: false;
+
+    min-width: 450px; min-height: 350px;
+    preferred-width: 780px; preferred-height: 560px;
+    background: #18181c;
+    title: "Менеджер команд голосового управления";
+
+    in-out property <[MyTreeItem]> tree-data: [];
+    in-out property <length> tree-width: 250px;
+    
+    in-out property <bool> menu-visible: false;
+    in-out property <length> menu-x: 0px;
+    in-out property <length> menu-y: 0px;
+    in-out property <int> menu-target-id: 0;
+
+    in-out property <int> active-parent-id: 0;
+    in-out property <float> active-parent-x: 0.0;
+    in-out property <float> active-parent-y: 0.0;
+    in-out property <float> active-self-x: 0.0;
+    in-out property <float> active-self-y: 0.0;
+
+    in-out property <bool> confirm-visible: false;
+    in-out property <string> confirm-text: "";
+
+    in-out property <bool> properties-visible: false;
+    in-out property <string> properties-text: "";
+    in-out property <string> tooltip-text: "";
+    in-out property <int> tooltip-index: -1;
+    in-out property <length> tooltip-x: 0px;
+    in-out property <length> tooltip-y: 0px;
+    in-out property <bool> tooltip-visible: false;
+
+    in-out property <length> target-item-x: 0px;
+    in-out property <length> target-item-w: 0px;
+    in-out property <int> active-tab: 0;
+    in-out property <[NodeLinkItem]> node-links-data: [];
+
+    callback toggle-expand(int);
+    callback start-rename(int);
+    callback finish-rename(int, string);
+    callback select-item(int, string);
+    callback show-menu(int, length, length);
+    callback menu-action(string, int);
+    callback change-note(int, string);
+    callback hover-item(int, int, float, float);
+    callback update-mouse-pos(length, length);
+    callback add-node-link(int, int);
+    callback delete-node-link(int, int);
+    callback undo-action();
+    
+    // ВНЕДРЕНО: Новые коллбэки для безопасного проброса горячих клавиш Ctrl+C / Ctrl+V
+    callback copy-action();
+    callback paste-action();
+
+    public function invoke_undo_action() { root.undo-action(); }
+    public function invoke_copy_action() { root.copy-action(); }
+    public function invoke_paste_action() { root.paste-action(); }
+
+    TouchArea {
+        width: 100%; height: 100%;
+        clicked => { root.menu-visible = false; }
+        scroll-event(evt) => {
+            if (!root.is-dragging-middle) {
+                if (evt.delta-y > 0) { root.scale-factor = Math.min(2.5, root.scale-factor + 0.05); } 
+                else { root.scale-factor = Math.max(0.4, root.scale-factor - 0.05); }
+            }
+            accept;
+        }
+        pointer-event(evt) => {
+            if (evt.button == PointerEventButton.middle) {
+                if (evt.kind == PointerEventKind.down) {
+                    root.is-dragging-middle = true; 
+                    root.drag-start-x = self.mouse-x; root.drag-start-y = self.mouse-y;
+                }
+                if (evt.kind == PointerEventKind.up) { root.is-dragging-middle = false; }
+            }
+            if (evt.kind == PointerEventKind.move) {
+                root.update-mouse-pos(self.mouse-x, self.mouse-y);
+                if (root.is-dragging-middle) {
+                    root.tree-offset-x += self.mouse-x - root.drag-start-x; 
+                    root.tree-offset-y += self.mouse-y - root.drag-start-y;
+                    root.drag-start-x = self.mouse-x; root.drag-start-y = self.mouse-y;
+                }
+            }
+        }
+    }
+    HorizontalLayout {
+        padding-left: 25px * root.scale-factor + root.tree-offset-x;
+        padding-top: 25px * root.scale-factor + root.tree-offset-y;
+        spacing: 20px * root.scale-factor; 
+        alignment: start;
+
+        VerticalLayout {
+            width: root.tree-width * root.scale-factor; spacing: 15px * root.scale-factor; alignment: start;
+            Text { text: "Список локаций"; font-size: 18px * root.scale-factor; font-weight: 700; color: white; }
+
+            tree-box := Rectangle {
+                background: #202026; border-radius: 8px * root.scale-factor; border-width: 1px * root.scale-factor; border-color: #ffffff10; 
+                width: root.tree-width * root.scale-factor; height: (root.tree-data.length * 32px + 16px) * root.scale-factor;
+
+                Rectangle {
+                    x: 8px * root.scale-factor; y: 8px * root.scale-factor;
+                    width: parent.width - 16px * root.scale-factor; height: parent.height - 16px * root.scale-factor;
+                    
+                    for item[item-index] in root.tree-data : Rectangle {
+                        if (item.depth > 0) : Rectangle {
+                            x: 0px; y: 0px; width: 100%; height: 100%;
+                            Rectangle {
+                                x: (item.parent-triangle-x - 8.0) * root.scale-factor * 1px;
+                                y: (item.parent-triangle-y - 8.0) * root.scale-factor * 1px;
+                                width: 1px * root.scale-factor;
+                                height: (item.self-triangle-y - item.parent-triangle-y) * root.scale-factor * 1px;
+                                background: #ffffff30;
+                            }
+                            Rectangle {
+                                x: (item.parent-triangle-x - 8.0) * root.scale-factor * 1px;
+                                y: (item.self-triangle-y - 8.0) * root.scale-factor * 1px;
+                                width: (item.self-triangle-x - item.parent-triangle-x) * root.scale-factor * 1px;
+                                height: 1px * root.scale-factor;
+                                background: #ffffff30;
+                            }
+                        }
+                    }
+                }
+
+                ListView {
+                    x: 8px * root.scale-factor; y: 8px * root.scale-factor;
+                    width: parent.width - 16px * root.scale-factor; height: parent.height - 16px * root.scale-factor;
+                    
+                    for item[item-index] in root.tree-data : Rectangle {
+                        height: 32px * root.scale-factor; width: parent.width;
+                        row-focus-scope := FocusScope {}
+                        
+                        row-touch := TouchArea {
+                            height: 32px * root.scale-factor; width: parent.width;
+                            clicked => { 
+                                root.menu-visible = false; root.select-item(item.id, item.text); 
+                                root.active-parent-id = item.parent-id;
+                                root.active-parent-x = item.parent-triangle-x; root.active-parent-y = item.parent-triangle-y;
+                                root.active-self-x = item.self-triangle-x; root.active-self-y = item.self-triangle-y;
+                                row-focus-scope.focus(); 
+                            }
+                            // По двойному клику запускаем редактирование имени
+                            double-clicked => { root.start-rename(item.id); }
+                            
+                            pointer-event(evt) => {
+                                if (evt.button == PointerEventButton.right && evt.kind == PointerEventKind.down) {
+                                    root.select-item(item.id, item.text); row-focus-scope.focus();
+                                    root.active-parent-id = item.parent-id;
+                                    root.active-parent-x = item.parent-triangle-x; root.active-parent-y = item.parent-triangle-y;
+                                    root.active-self-x = item.self-triangle-x; root.active-self-y = item.self-triangle-y;
+                                    
+                                    root.show-menu(
+                                        item.id, 
+                                        row-touch.mouse-x + 25px * root.scale-factor + (item.depth * 24px) * root.scale-factor + root.tree-offset-x, 
+                                        row-touch.mouse-y + 65px * root.scale-factor + (item-index * 32px) * root.scale-factor + root.tree-offset-y
+                                    );
+                                }
+                            }
+
+                            changed has-hover => {
+                                if (self.has-hover) {
+                                    root.active-self-x = item.self-triangle-x;
+                                    root.active-self-y = item.self-triangle-y;
+                                    root.hover-item(item.id, item-index, 0.0, 0.0);
+                                }
+                                if (!self.has-hover) {
+                                    root.hover-item(-1, -1, 0.0, 0.0);
+                                }
+                            }
+                        }
+
+                        // Иконка-треугольник
+                        Rectangle {
+                            x: (10px + item.depth * 24px) * root.scale-factor;
+                            y: 0px; width: 20px * root.scale-factor; height: 32px * root.scale-factor; z: 150;
+                            if (item.has-children) : TouchArea {
+                                width: 100%; height: 100%; clicked => { root.toggle-expand(item.id); }
+                                Text { text: item.is-expanded ? "▼ " : "▶ "; color: #ffffffba; font-size: 11px * root.scale-factor; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                        }
+
+                        // Овальная плашка текста
+                        row-bg := Rectangle {
+                            x: (10px + item.depth * 24px + 20px) * root.scale-factor;
+                            border-width: item.is-selected ? 2px * root.scale-factor : 1px * root.scale-factor;
+                            border-color: item.is-selected ? #ffd700 : #ffffff25; border-radius: 12px * root.scale-factor;
+                            background: item.is-selected ? #ffd70015 : #ffffff05; 
+                            height: 24px * root.scale-factor; y: 4px * root.scale-factor; 
+                            width: item.is-editing ? 160px * root.scale-factor : (text-box.preferred-width + 20px * root.scale-factor);
+                            
+                            HorizontalLayout {
+                                padding-left: 10px * root.scale-factor; padding-right: 10px * root.scale-factor;
+                                opacity: item.is-editing ? 0 : 1;
+                                text-box := Text { text: item.text; color: item.is-selected ? #ffffff : #e0e0e0; font-size: 14px * root.scale-factor; font-weight: item.is-selected ? 700 : 400; vertical-alignment: center; }
+                            }
+
+                            if (item.is-editing) : edit-field := LineEdit {
+                                text: item.text; width: 100%; height: 100%; font-size: 13px * root.scale-factor;
+                                accepted => { root.finish-rename(item.id, edit-field.text); }
+                                init => { edit-field.focus(); edit-field.select-all(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Тултип на глобальном уровне
+    if (root.tooltip-index != -1 && root.tooltip-visible) : Rectangle {
+        x: 25px * root.scale-factor + root.tree-offset-x + (root.active-self-x + 30.0) * root.scale-factor * 1px;
+        y: 25px * root.scale-factor + root.tree-offset-y + (root.active-self-y - 16.0) * root.scale-factor * 1px - self.height - 3px * root.scale-factor + 30px * root.scale-factor;
+        width: Math.min(220px, global-text-layout.preferred-width + 16px);
+        background: #2d2d35; border-radius: 4px; border-width: 1px; border-color: #ffffff25; z: 999;
+        global-text-layout := Text { text: root.tooltip-text; color: #ffd700; font-size: 12px; x: 8px; y: 4px; wrap: word-wrap; width: parent.width - 16px; }
+        height: global-text-layout.preferred-height + 8px;
+    }
+
+    if (root.menu-visible) : Rectangle {
+        x: root.menu-x; y: root.menu-y; width: 175px; height: 162px;
+        background: #1e1e24; border-radius: 4px; border-width: 1px; border-color: #ffffff20; z: 200;
+        VerticalBox {
+            padding: 5px; spacing: 2px;
+            TouchArea { height: 28px; clicked => { root.menu-action("add", root.menu-target-id); } Rectangle { background: parent.has-hover ? #ffffff15 : #00000000; border-radius: 2px; } Text { text: " Добавить локацию"; color: white; font-size: 13px; x: 8px; vertical-alignment: center; } }
+            TouchArea { height: 28px; clicked => { root.add-node-link(root.menu-target-id, 1); } Rectangle { background: parent.has-hover ? #ffffff15 : #00000000; border-radius: 2px; } Text { text: " Добавить связь..."; color: #55ffff; font-size: 13px; x: 8px; vertical-alignment: center; } }
+            TouchArea { height: 28px; clicked => { root.menu-action("rename", root.menu-target-id); } Rectangle { background: parent.has-hover ? #ffffff15 : #00000000; border-radius: 2px; } Text { text: "✏ Переименовать"; color: white; font-size: 13px; x: 8px; vertical-alignment: center; } }
+            TouchArea { height: 28px; clicked => { root.menu-action("properties", root.menu-target-id); } Rectangle { background: parent.has-hover ? #ffffff15 : #00000000; border-radius: 4px; } Text { text: " Свойства"; color: #ffd700; font-size: 13px; x: 8px; vertical-alignment: center; } }
+            TouchArea { height: 28px; clicked => { root.menu-action("delete", root.menu-target-id); } Rectangle { background: parent.has-hover ? #ff555530 : #ffffff05; border-radius: 4px; } Text { text: "❌  Удалить локацию"; color: #ff5555; font-size: 13px; x: 8px; vertical-alignment: center; } }
+        }
+    }
+
+    if (root.properties-visible) : Rectangle {
+        width: 100%; height: 100%; background: #000000a0; z: 250;
+        Rectangle {
+            width: 440px; height: 350px; background: #1e1e24; border-radius: 8px; border-width: 1px; border-color: #ffffff20;
+            VerticalLayout {
+                padding: 15px; spacing: 12px;
+                HorizontalLayout {
+                    height: 32px; spacing: 5px;
+                    TouchArea { width: 50%; clicked => { root.active-tab = 0; } Rectangle { background: root.active-tab == 0 ? #ffd70020 : #ffffff05; border-radius: 4px; border-width: 1px; border-color: root.active-tab == 0 ? #ffd700 : #ffffff10; } Text { text: " Примечание"; color: root.active-tab == 0 ? #ffd700 : white; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                    TouchArea { width: 50%; clicked => { root.active-tab = 1; } Rectangle { background: root.active-tab == 1 ? #ffd70020 : #ffffff05; border-radius: 4px; border-width: 1px; border-color: root.active-tab == 1 ? #ffd700 : #ffffff10; } Text { text: " Связи ноды (Flows)"; color: root.active-tab == 1 ? #ffd700 : white; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                }
+                
+                VerticalLayout {
+                    spacing: 8px; visible: root.active-tab == 0; height: root.active-tab == 0 ? 190px : 0px;
+                    Text { text: "ID родительской ноды: " + root.active-parent-id; color: #ffffff60; font-size: 12px; }
+                    Text { text: "Треугольник родителя: X = " + root.active-parent-x + "px, Y = " + root.active-parent-y + "px"; color: #ffd700; font-size: 11px; }
+                    Text { text: "Собственный треугольник: X = " + root.active-self-x + "px, Y = " + root.active-self-y + "px"; color: #55ffff; font-size: 11px; }
+                    
+                    note-field := LineEdit { text: root.properties-text; placeholder-text: "Параметры ноды..."; height: 36px; accepted => { root.change-note(root.menu-target-id, note-field.text); } }
+                    Rectangle { vertical-stretch: 1; }
+                }
+                
+                VerticalLayout {
+                    spacing: 8px; visible: root.active-tab == 1; height: root.active-tab == 1 ? 190px : 0px;
+                    HorizontalLayout { Text { text: "Существующие связи нитей:"; color: #ffffff90; font-size: 12px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Button { text: " Связать"; clicked => { root.add-node-link(root.menu-target-id, 1); } } }
+                    links-list := Rectangle {
+                        background: #141418; border-radius: 4px; border-width: 1px; border-color: #ffffff10; height: 140px; 
+                        ListView {
+                            height: root.node-links-data.length * 32px;
+                            for link[link-idx] in root.node-links-data : HorizontalLayout {
+                                height: 32px; padding: 4px; 
+                                Text { text: " " + link.target_name; color: #ffd700; vertical-alignment: center; font-size: 13px; } 
+                                Rectangle { horizontal-stretch: 1; }
+                                TouchArea { width: 24px; height: 24px; clicked => { root.delete-node-link(root.menu-target-id, link.id); } Rectangle { background: parent.has-hover ? #ff555530 : #ffffff05; border-radius: 4px; } Text { text: "❌"; color: #ff5555; horizontal-alignment: center; vertical-alignment: center; font-size: 10px; } }
+                            }
+                        }
+                    }
+                }
+                
+                HorizontalLayout {
+                    spacing: 10px; alignment: end; height: 32px;
+                    Button { text: "Сохранить изменения"; clicked => { root.change-note(root.menu-target-id, note-field.text); root.properties-visible = false; } }
+                    Button { text: "Закрыть"; clicked => { root.properties-visible = false; } }
+                }
+            }
+        }
+    }
+}

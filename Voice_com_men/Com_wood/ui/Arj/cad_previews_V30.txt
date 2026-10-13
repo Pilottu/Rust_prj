@@ -1,0 +1,91 @@
+import { CADLine, SlintCADTree } from "cad_types.slint";
+import { CADTreeBlock } from "cad_tree_block.slint";
+import { CADLinkLine } from "cad_link_line.slint";
+
+// Изолированные отладочные окна — открываются отдельно от основного
+// AppWindow, для проверки одного дерева/одной линии без остального UI.
+
+export component TreePreview inherits Window {
+    in property <SlintCADTree> tree;
+    property <string> status: "Готово";
+
+    min-width: 900px;
+    min-height: 520px;
+    preferred-width: 1100px;
+    preferred-height: 650px;
+    background: #121215;
+    title: "CAD Tree Preview";
+
+    Text {
+        x: 20px;
+        y: 18px;
+        text: "Изолированный preview дерева";
+        color: #ffd700;
+        font-size: 18px;
+        font-weight: 700;
+    }
+    Text {
+        x: 20px;
+        y: 46px;
+        text: "Выбор: " + root.status;
+        color: #ffffffaa;
+        font-size: 13px;
+    }
+    CADTreeBlock {
+        tree: root.tree;
+        scale_factor: 1.0;
+        select_item(id, text, tree_id) => { root.status = text + " (id " + id + ")"; }
+        toggle_expand(id, tree_id) => { root.status = "toggle " + id; }
+        start_drag(id, anchor_x, anchor_y) => { root.status = "drag " + id; }
+        show_menu(id, tree_id, x, y) => { root.status = "menu " + id; }
+        item_double_clicked(id, tree_id) => { root.status = "double click " + id; }
+            finish_rename(id, value, tree_id) => { root.status = "rename " + value; }
+        hover_item(id, index, tree_id, self_x, self_y, tree_cad_x, tree_cad_y) => { }
+        finish_link(source_id, source_tree_id, target_id, target_tree_id, source_x, source_y, target_x, target_y, source_tree_x, source_tree_y, target_tree_x, target_tree_y) => { root.status = "link"; }
+    }
+}
+
+export component LinePreview inherits Window {
+    in property <CADLine> line;
+    property <int> selected_link_id: -1;
+    property <string> status: "Готово";
+
+    min-width: 900px;
+    min-height: 520px;
+    preferred-width: 1100px;
+    preferred-height: 650px;
+    background: #121215;
+    title: "CAD Link Preview";
+
+    Text {
+        x: 20px;
+        y: 18px;
+        text: "Изолированный preview CAD-линии";
+        color: #ffd700;
+        font-size: 18px;
+        font-weight: 700;
+    }
+    Text {
+        x: 20px;
+        y: 46px;
+        text: "Статус: " + root.status;
+        color: #ffffffaa;
+        font-size: 13px;
+    }
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        CADLinkLine {
+            line: root.line;
+            scale_factor: 1.0;
+            selected_link_id: root.selected_link_id;
+            clicked(id) => {
+                root.selected_link_id = id;
+                root.status = "Выбрана линия " + id;
+            }
+            context_menu(id, x, y) => { root.status = "Контекстное меню " + id; }
+        }
+    }
+}

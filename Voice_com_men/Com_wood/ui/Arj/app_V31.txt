@@ -1,0 +1,465 @@
+import { Button } from "std-widgets.slint";
+import { CADLine, NodeLinkInfo, NodeNoteInfo, SlintCADTree } from "cad_types.slint";
+import { CADWorkspace } from "cad_workspace.slint";
+import { NodeMenu, LinkMenu, RootMenu } from "cad_menus.slint";
+import { LinkPropertiesDialog, LinkConfirmDialog } from "cad_dialogs.slint";
+import { NodePropertiesPanel } from "cad_properties_panel.slint";
+
+export component AppWindow inherits Window {
+    in_out property <float> scale_factor: 1.0;
+    in_out property <length> bg_offset_x: 0px;
+    in_out property <length> bg_offset_y: 0px;
+    in_out property <[SlintCADTree]> trees_list: [];
+    in_out property <[CADLine]> active_cad_links: [];
+    in_out property <bool> menu_visible: false;
+    in_out property <float> menu_x: 0.0;
+    in_out property <float> menu_y: 0.0;
+    in_out property <int> menu_target_id: 0;
+    in_out property <int> menu_source_tree: 1;
+    in_out property <bool> is_linking_mode: false;
+    in_out property <int> linking_source_node_id: -1;
+    in_out property <bool> properties_visible: false;
+    in_out property <string> properties_text: "";
+    in_out property <[NodeLinkInfo]> properties_links: [];
+    in_out property <[NodeNoteInfo]> properties_notes: [];
+    in_out property <string> tooltip_text: "";
+    in_out property <int> tooltip_index: -1;
+    in_out property <float> active_self_x: 0.0;
+    in_out property <float> active_self_y: 0.0;
+    in_out property <float> active_tree_cad_x: 0.0;
+    in_out property <float> active_tree_cad_y: 0.0;
+    property <bool> hover_active: false;
+    property <duration> hover_start_time: 0ms;
+    in_out property <bool> tooltip_visible: root.hover_active && root.tooltip_index != -1 && (animation-tick() - root.hover_start_time >= 4000ms);
+    property <duration> last_click_time: 0ms;
+    property <int> last_clicked_item_id: -1;
+    property <length> drag_start_x: 0px;
+    property <length> drag_start_y: 0px;
+    property <bool> is_dragging_middle: false;
+    property <int> active_dragging_tree_id: -1;
+    property <float> tree_drag_anchor_x: 0.0;
+    property <float> tree_drag_anchor_y: 0.0;
+    property <float> link_mode_blink_opacity: mod(animation-tick() / 500ms, 2.0) > 1.0 ? 0.3 : 1.0;
+    in_out property <int> linking_source_tree_id: -1;
+    in_out property <float> linking_source_x: 0.0;
+    in_out property <float> linking_source_y: 0.0;
+    in_out property <float> linking_source_tree_x: 0.0;
+    in_out property <float> linking_source_tree_y: 0.0;
+    in_out property <int> linking_target_node_id: -1;
+    in_out property <int> linking_target_tree_id: -1;
+    in_out property <float> linking_target_x: 0.0;
+    in_out property <float> linking_target_y: 0.0;
+    in_out property <float> linking_target_tree_x: 0.0;
+    in_out property <float> linking_target_tree_y: 0.0;
+    in_out property <bool> link_confirm_visible: false;
+    in_out property <int> selected_link_id: -1;
+    in_out property <bool> link_menu_visible: false;
+    in_out property <float> link_menu_x: 0.0;
+    in_out property <float> link_menu_y: 0.0;
+    in_out property <int> link_menu_id: -1;
+    in_out property <int> link_menu_left_id: -1;
+    in_out property <int> link_menu_right_id: -1;
+    in_out property <bool> link_properties_visible: false;
+    in_out property <int> link_properties_left_id: -1;
+    in_out property <int> link_properties_right_id: -1;
+    in_out property <int> selected_property_link_index: -1;
+    in_out property <int> selected_property_note_index: -1;
+    in_out property <int> selected_node_id: -1;
+    in_out property <int> selected_tree_id: -1;
+    in_out property <bool> note_editing: false;
+    in_out property <string> note_edit_text: "";
+    in_out property <bool> root_menu_visible: false;
+    in_out property <float> root_menu_x: 0.0;
+    in_out property <float> root_menu_y: 0.0;
+    in_out property <int> root_menu_tree_id: -1;
+    in_out property <int> root_menu_node_id: -1;
+
+    callback toggle_expand(int, int);
+    callback finish_rename(int, string, int);
+    callback select_item(int, string, int);
+    callback menu_action(string, int, int);
+    callback add_cad_link_mode(int, int, float, float, float, float);
+    callback finish_cad_link(int, int, int, int, float, float, float, float, float, float, float, float);
+    callback item_double_clicked(int, int);
+    callback change_note(int, string, int);
+    callback hover_item(int, int, int);
+    callback key_esc_pressed();
+    callback trees_geometry_changed();
+    callback update_tree_position(int, float, float);
+    callback resolve_tree_collision(int);
+    callback add_main_tree(float, float);
+    callback undo_action();
+    callback copy_action();
+    callback paste_action();
+    callback delete_link(int);
+    callback delete_link_from_properties(int);
+    callback delete_selected_link();
+    callback delete_note_from_properties(int);
+    callback add_note_to_properties(int, string);
+    callback save_note_from_properties(int, int, string);
+    callback select_note_from_properties(int);
+    callback note_double_clicked(int);
+    callback note_edit_finished(int, string);
+    callback show_tree_menu(int, int, float, float);
+    callback select_link_target(int, int, float, float, float, float);
+    callback delete_tree(int);
+
+    public function invoke_undo_action() { root.undo_action(); }
+    public function invoke_copy_action() { root.copy_action(); }
+    public function invoke_paste_action() { root.paste_action(); }
+
+    function handle_mid_pan(btn: PointerEventButton, kind: PointerEventKind, abs_x: length, abs_y: length) {
+        if (btn == PointerEventButton.middle) {
+            if (kind == PointerEventKind.down) {
+                root.is_dragging_middle = true;
+                root.drag_start_x = abs_x;
+                root.drag_start_y = abs_y;
+            }
+            if (kind == PointerEventKind.up) {
+                root.is_dragging_middle = false;
+            }
+        }
+        if (kind == PointerEventKind.move && root.is_dragging_middle) {
+            root.bg_offset_x += abs_x - root.drag_start_x;
+            root.bg_offset_y += abs_y - root.drag_start_y;
+            root.drag_start_x = abs_x;
+            root.drag_start_y = abs_y;
+            root.trees_geometry_changed();
+        }
+    }
+
+    min_width: 1000px;
+    min_height: 700px;
+    preferred_width: 1300px;
+    preferred_height: 850px;
+    background: #121215;
+    title: "Менеджер команд голосового управления (CAD Среда)";
+
+    global_keys := FocusScope {
+        x: 0px;
+        y: 0px;
+        width: 0px;
+        height: 0px;
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.key_esc_pressed();
+                return accept;
+            }
+            if (event.text == Key.Delete) {
+                if (root.selected_link_id != -1) {
+                    root.delete_selected_link();
+                }
+                return accept;
+            }
+            return reject;
+        }
+        init => { self.focus(); }
+    }
+
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.menu_visible = false; root.link_menu_visible = false; root.root_menu_visible = false; root.selected_link_id = -1; global_keys.focus(); }
+        scroll-event(evt) => {
+            if (!root.is_dragging_middle && root.active_dragging_tree_id == -1) {
+                let old_scale = root.scale_factor;
+                let new_scale = evt.delta-y > 0 ? Math.max(0.4, old_scale - 0.05) : Math.min(2.5, old_scale + 0.05);
+                if (new_scale != old_scale) {
+                    let cad_mouse_x = (self.mouse-x - root.bg_offset_x) / (1px * old_scale);
+                    let cad_mouse_y = (self.mouse-y - root.bg_offset_y) / (1px * old_scale);
+                    root.scale_factor = new_scale;
+                    root.bg_offset_x = self.mouse-x - cad_mouse_x * new_scale * 1px;
+                    root.bg_offset_y = self.mouse-y - cad_mouse_y * new_scale * 1px;
+                }
+                root.trees_geometry_changed();
+            }
+            accept;
+        }
+        pointer-event(evt) => {
+            if (evt.kind == PointerEventKind.move) {
+                root.hover_active = false;
+                root.tooltip_index = -1;
+            }
+            if (evt.button == PointerEventButton.middle) {
+                if (evt.kind == PointerEventKind.down) {
+                    root.is_dragging_middle = true;
+                    root.drag_start_x = self.mouse-x;
+                    root.drag_start_y = self.mouse-y;
+                }
+                if (evt.kind == PointerEventKind.up) {
+                    root.is_dragging_middle = false;
+                }
+            }
+            if (evt.kind == PointerEventKind.move && root.is_dragging_middle) {
+                root.bg_offset_x += self.mouse-x - root.drag_start_x;
+                root.bg_offset_y += self.mouse-y - root.drag_start_y;
+                root.drag_start_x = self.mouse-x;
+                root.drag_start_y = self.mouse-y;
+                root.trees_geometry_changed();
+            }
+        }
+    }
+
+    if (root.active_dragging_tree_id != -1) : TouchArea {
+        width: 100%;
+        height: 100%;
+        z: 800;
+        pointer-event(evt) => {
+            if (evt.kind == PointerEventKind.up) {
+                let tid = root.active_dragging_tree_id;
+                root.active_dragging_tree_id = -1;
+                root.resolve_tree_collision(tid);
+            }
+            if (evt.kind == PointerEventKind.move) {
+                let current_mouse_cad_x = (self.mouse-x - root.bg_offset_x) / (1px * root.scale_factor);
+                let current_mouse_cad_y = (self.mouse-y - root.bg_offset_y) / (1px * root.scale_factor);
+                root.update_tree_position(root.active_dragging_tree_id, current_mouse_cad_x - root.tree_drag_anchor_x, current_mouse_cad_y - root.tree_drag_anchor_y);
+            }
+        }
+    }
+
+    Rectangle {
+        x: (root.width - 240px) / 2;
+        y: 15px;
+        width: 240px;
+        height: 35px;
+        z: 1100;
+        Button {
+            text: "Добавить основной узел";
+            width: 100%;
+            height: 100%;
+            clicked => {
+                let target_screen_x = root.width / 2;
+                let target_screen_y = 15px + 35px + 15px;
+                let target_cad_x = (target_screen_x - root.bg_offset_x) / (1px * root.scale_factor);
+                let target_cad_y = (target_screen_y - root.bg_offset_y) / (1px * root.scale_factor);
+                root.add_main_tree(target_cad_x, target_cad_y);
+            }
+        }
+    }
+
+    if (root.is_linking_mode) : Rectangle {
+        x: 15px;
+        y: 15px;
+        width: 320px;
+        height: 50px;
+        background: #ffaa0020;
+        border-width: 1px;
+        border-color: #ffaa00;
+        border-radius: 4px;
+        z: 1000;
+        Text {
+            text: "Режим CAD-связывания. Кликните целевую ноду (Esc для отмены)";
+            color: #ffaa00;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            font-weight: 700;
+            font-size: 12px;
+            wrap: word-wrap;
+            width: parent.width - 12px;
+            x: 6px;
+        }
+    }
+
+    canvas := Rectangle {
+        x: root.bg_offset_x;
+        y: root.bg_offset_y;
+        width: 100%;
+        height: 100%;
+
+        CADWorkspace {
+            trees: root.trees_list;
+            links: root.active_cad_links;
+            scale_factor: root.scale_factor;
+            selected_link_id: root.selected_link_id;
+            linking_mode: root.is_linking_mode;
+            linking_source_node_id: root.linking_source_node_id;
+            linking_source_tree_id: root.linking_source_tree_id;
+            linking_source_x: root.linking_source_x;
+            linking_source_y: root.linking_source_y;
+            linking_source_tree_x: root.linking_source_tree_x;
+            linking_source_tree_y: root.linking_source_tree_y;
+            linking_target_node_id: root.linking_target_node_id;
+            linking_target_tree_id: root.linking_target_tree_id;
+            link_confirm_visible: root.link_confirm_visible;
+            link_clicked(id) => { root.selected_link_id = id; }
+            link_context_menu(id, screen_x, screen_y, id_obj1, id_obj2, side1) => {
+                root.menu_visible = false;
+                root.selected_link_id = id;
+                root.link_menu_id = id;
+                root.link_menu_left_id = side1 == 0 ? id_obj1 : id_obj2;
+                root.link_menu_right_id = side1 == 0 ? id_obj2 : id_obj1;
+                root.link_menu_x = (screen_x - root.bg_offset_x / 1px) / root.scale_factor;
+                root.link_menu_y = (screen_y - root.bg_offset_y / 1px) / root.scale_factor;
+                root.link_menu_visible = true;
+            }
+            select_item(id, text, tree_id) => {
+                if (animation-tick() - root.last_click_time < 350ms && root.last_clicked_item_id == id) {
+                    root.item_double_clicked(id, tree_id);
+                } else {
+                    root.select_item(id, text, tree_id);
+                }
+                root.last_click_time = animation-tick();
+                root.last_clicked_item_id = id;
+            }
+            toggle_expand(id, tree_id) => { root.toggle_expand(id, tree_id); }
+            start_drag(id, anchor_x, anchor_y) => {
+                root.tree_drag_anchor_x = anchor_x;
+                root.tree_drag_anchor_y = anchor_y;
+                root.active_dragging_tree_id = id;
+            }
+            show_menu(id, tree_id, menu_x, menu_y) => { root.show_tree_menu(id, tree_id, menu_x, menu_y); }
+            item_double_clicked(id, tree_id) => { root.item_double_clicked(id, tree_id); }
+            finish_rename(id, value, tree_id) => { root.finish_rename(id, value, tree_id); }
+            hover_item(id, index, tree_id, self_x, self_y, tree_cad_x, tree_cad_y) => {
+                if (root.tooltip_index != id) {
+                    root.tooltip_index = id;
+                    root.menu_source_tree = tree_id;
+                    root.hover_item(id, index, tree_id);
+                    root.hover_active = true;
+                    root.hover_start_time = animation-tick();
+                }
+                root.active_self_x = self_x;
+                root.active_self_y = self_y;
+                root.active_tree_cad_x = tree_cad_x;
+                root.active_tree_cad_y = tree_cad_y;
+            }
+            select_link_target(id, tree_id, node_x, node_y, tree_x, tree_y) => { root.select_link_target(id, tree_id, node_x, node_y, tree_x, tree_y); }
+            finish_link(source_id, source_tree_id, target_id, target_tree_id, source_x, source_y, target_x, target_y, source_tree_x, source_tree_y, target_tree_x, target_tree_y) => {
+                root.finish_cad_link(source_id, source_tree_id, target_id, target_tree_id, source_x, source_y, target_x, target_y, source_tree_x, source_tree_y, target_tree_x, target_tree_y);
+            }
+            show_root_menu(tree_id, node_id, x, y) => {
+                root.menu_visible = false;
+                root.link_menu_visible = false;
+                root.root_menu_tree_id = tree_id;
+                root.root_menu_node_id = node_id;
+                root.root_menu_x = x;
+                root.root_menu_y = y;
+                root.root_menu_visible = true;
+            }
+            pan(btn, kind, x, y) => { root.handle_mid_pan(btn, kind, x, y); }
+        }
+
+        if (root.tooltip_index != -1 && root.tooltip_visible) : Rectangle {
+            x: 8px * root.scale_factor + (root.active_self_x + 70.0) * root.scale_factor * 1px + root.active_tree_cad_x * root.scale_factor * 1px;
+            y: 8px * root.scale_factor + (root.active_self_y - 1.0) * root.scale_factor * 1px - self.height - 3px * root.scale_factor + 30px * root.scale_factor + root.active_tree_cad_y * root.scale_factor * 1px - 25px * root.scale_factor;
+            width: Math.min(220px, g_text.preferred-width + 16px);
+            background: #2d2d35;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: root.is_linking_mode ? #ffaa00 : #ffffff25;
+            z: 1300;
+            g_text := Text {
+                text: root.is_linking_mode ? "Выберите объект связи" : root.tooltip_text;
+                color: root.is_linking_mode ? #ffaa00 : #ffd700;
+                font-size: 12px;
+                x: 8px;
+                y: 4px;
+                wrap: word-wrap;
+                width: parent.width - 16px;
+            }
+            height: g_text.preferred-height + 8px;
+        }
+    }
+
+    if (root.menu_visible) : NodeMenu {
+        x: root.menu_x * 1px * root.scale_factor + root.bg_offset_x;
+        y: root.menu_y * 1px * root.scale_factor + root.bg_offset_y;
+        add_node() => {
+            root.menu_visible = false;
+            root.menu_action("add", root.menu_target_id, root.menu_source_tree);
+        }
+        add_link() => {
+            root.menu_visible = false;
+            root.link_confirm_visible = false;
+            root.linking_target_node_id = -1;
+            root.linking_target_tree_id = -1;
+            root.add_cad_link_mode(root.menu_target_id, root.menu_source_tree, root.active_self_x, root.active_self_y, root.active_tree_cad_x, root.active_tree_cad_y);
+            global_keys.focus();
+        }
+        rename() => {
+            root.menu_visible = false;
+            root.menu_action("rename", root.menu_target_id, root.menu_source_tree);
+        }
+        show_properties() => {
+            root.menu_visible = false;
+            root.menu_action("properties", root.menu_target_id, root.menu_source_tree);
+        }
+        delete_node() => {
+            root.menu_visible = false;
+            root.menu_action("delete", root.menu_target_id, root.menu_source_tree);
+        }
+    }
+
+    if (root.link_menu_visible) : LinkMenu {
+        x: root.link_menu_x * 1px * root.scale_factor + root.bg_offset_x;
+        y: root.link_menu_y * 1px * root.scale_factor + root.bg_offset_y;
+        show_properties() => {
+            root.link_menu_visible = false;
+            root.link_properties_left_id = root.link_menu_left_id;
+            root.link_properties_right_id = root.link_menu_right_id;
+            root.link_properties_visible = true;
+        }
+        delete_link() => {
+            root.link_menu_visible = false;
+            root.delete_link(root.link_menu_id);
+            root.selected_link_id = -1;
+        }
+    }
+
+    if (root.root_menu_visible) : RootMenu {
+        x: root.root_menu_x * 1px * root.scale_factor + root.bg_offset_x;
+        y: root.root_menu_y * 1px * root.scale_factor + root.bg_offset_y;
+        show_properties() => {
+            root.root_menu_visible = false;
+            root.menu_action("properties", root.root_menu_node_id, root.root_menu_tree_id);
+        }
+        delete_tree() => {
+            root.root_menu_visible = false;
+            root.delete_tree(root.root_menu_tree_id);
+        }
+    }
+
+    if (root.link_properties_visible) : LinkPropertiesDialog {
+        left_id: root.link_properties_left_id;
+        right_id: root.link_properties_right_id;
+        close() => { root.link_properties_visible = false; }
+    }
+
+    if (root.properties_visible) : NodePropertiesPanel {
+        notes: root.properties_notes;
+        links: root.properties_links;
+        selected_node_id: root.selected_node_id;
+        scale_factor: root.scale_factor;
+        selected_note_index <=> root.selected_property_note_index;
+        selected_link_index <=> root.selected_property_link_index;
+        note_editing <=> root.note_editing;
+        note_text <=> root.properties_text;
+        close() => {
+            root.properties_visible = false;
+            root.selected_property_link_index = -1;
+            root.selected_property_note_index = -1;
+            root.note_editing = false;
+        }
+        select_note_from_properties(idx) => { root.select_note_from_properties(idx); }
+        note_double_clicked(idx) => { root.note_double_clicked(idx); }
+        note_edit_finished(idx, txt) => { root.note_edit_finished(idx, txt); }
+        add_note_to_properties(id, txt) => { root.add_note_to_properties(id, txt); }
+        delete_note_from_properties(idx) => { root.delete_note_from_properties(idx); }
+        delete_link_from_properties(idx) => { root.delete_link_from_properties(idx); }
+    }
+
+    if (root.is_linking_mode && root.link_confirm_visible) : LinkConfirmDialog {
+        confirm() => {
+            root.finish_cad_link(root.linking_source_node_id, root.linking_source_tree_id, root.linking_target_node_id, root.linking_target_tree_id, root.linking_source_x, root.linking_source_y, root.linking_target_x, root.linking_target_y, root.linking_source_tree_x, root.linking_source_tree_y, root.linking_target_tree_x, root.linking_target_tree_y);
+            root.link_confirm_visible = false;
+            global_keys.focus();
+        }
+        cancel() => {
+            root.link_confirm_visible = false;
+            root.linking_target_node_id = -1;
+            root.linking_target_tree_id = -1;
+            global_keys.focus();
+        }
+    }
+}

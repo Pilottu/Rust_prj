@@ -1,0 +1,404 @@
+#![windows_subsystem = "windows"]
+use serde::{Deserialize, Serialize};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+slint::include_modules!();
+
+#[link(name = "user32")]
+extern "system" {
+    fn FindWindowW(lp_c: *const u16, lp_w: *const u16) -> *mut std::ffi::c_void;
+    fn ShowWindow(hwnd: *mut std::ffi::c_void, n_cmd_show: i32) -> i32;
+    fn SetWindowPos(
+        hwnd: *mut std::ffi::c_void,
+        hwnd_after: *mut std::ffi::c_void,
+        x: i32,
+        y: i32,
+        cx: i32,
+        cy: i32,
+        flags: u32,
+    ) -> i32;
+}
+
+const SWP_FRAMECHANGED: u32 = 0x0020;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RawItem {
+    id: i32,
+    text: String,
+    parent_id: i32,
+    is_expanded: bool,
+    is_editing: bool,
+    note: String,
+    links: Vec<i32>,
+}
+
+struct AppState {
+    tree1_items: Vec<RawItem>,
+    tree2_items: Vec<RawItem>,
+    cad_links: Vec<CADLine>,
+    next_id: i32,
+}
+
+fn build_tree_view(items: &[RawItem]) -> Vec<MyTreeItem> {
+    let mut res = Vec::new();
+    let roots: Vec<&RawItem> = items.iter().filter(|i| i.parent_id == 0).collect();
+    for (idx, r) in roots.iter().enumerate() {
+        let is_last = idx == roots.len() - 1;
+        traverse(items, r, 0, is_last, false, &mut res);
+    }
+    res
+}
+
+fn traverse(
+    items: &[RawItem],
+    curr: &RawItem,
+    depth: i32,
+    is_last: bool,
+    p_is_last: bool,
+    res: &mut Vec<MyTreeItem>,
+) {
+    let has_children = items.iter().any(|i| i.parent_id == curr.id);
+    let row_idx = res.len() as f32;
+
+    let local_node_x = 10.0 + (depth as f32 * 24.0) + 20.0;
+    let local_node_y = 4.0 + (row_idx * 32.0);
+
+    let slint_item = MyTreeItem {
+        id: curr.id,
+        text: curr.text.clone().into(),
+        depth,
+        is_last,
+        has_children,
+        is_expanded: curr.is_expanded,
+        is_editing: curr.is_editing,
+        parent_is_last: p_is_last,
+        is_selected: false,
+        note: curr.note.clone().into(),
+        text_width: 100.0,
+        smart_id: format!("{}_{}", depth, curr.id).into(),
+        line_mask: ModelRc::from(Rc::new(VecModel::from(vec![0; 12]))),
+        parent_id: curr.parent_id,
+        parent_triangle_x: local_node_x,
+        parent_triangle_y: local_node_y,
+        self_triangle_x: local_node_x + 30.0,
+        self_triangle_y: local_node_y + 12.0,
+    };
+
+    res.push(slint_item);
+
+    if curr.is_expanded {
+        let children: Vec<&RawItem> = items.iter().filter(|i| i.parent_id == curr.id).collect();
+        for (idx, ch) in children.iter().enumerate() {
+            let ch_last = idx == children.len() - 1;
+            traverse(items, ch, depth + 1, ch_last, is_last, res);
+        }
+    }
+}
+fn update_ui_models(app: &AppWindow, state: &AppState) {
+    let t1_views = build_tree_view(&state.tree1_items);
+    let t2_views = build_tree_view(&state.tree2_items);
+
+    app.set_tree1_data(ModelRc::from(Rc::new(VecModel::from(t1_views))));
+    app.set_tree2_data(ModelRc::from(Rc::new(VecModel::from(t2_views))));
+
+    // ИСПРАВЛЕНО: Прямое приведение типов без использования суффикса px
+    let scale = app.get_scale_factor();
+    let bg_x = app.get_bg_offset_x();
+    let bg_y = app.get_bg_offset_y();
+
+    let t1_cad_x = app.get_tree1_cad_x();
+    let t1_cad_y = app.get_tree1_cad_y();
+    let t2_cad_x = app.get_tree2_cad_x();
+    let t2_cad_y = app.get_tree2_cad_y();
+
+    // МАТЕМАТИЧЕСКИЙ CAD ПРОЕКТОР: Рассчитываем и обновляем экранные позиции
+    let t1_screen_x = bg_x + (t1_cad_x * scale);
+    let t1_screen_y = bg_y + (t1_cad_y * scale);
+    let t2_screen_x = bg_x + (t2_cad_x * scale);
+    let t2_screen_y = bg_y + (t2_cad_y * scale);
+
+    // ИСПРАВЛЕНО: Передаем чистые числовые значения, Slint сам преобразует их в логические пиксели
+    app.set_tree1_x(t1_screen_x);
+    app.set_tree1_y(t1_screen_y);
+    app.set_tree2_x(t2_screen_x);
+    app.set_tree2_y(t2_screen_y);
+
+    let mut updated_links = Vec::new();
+    for link in &state.cad_links {
+        let mut line = link.clone();
+        let mut found_src = false;
+        let mut found_dst = false;
+
+        if let Some(p1) = find_local_coords(&app.get_tree1_data(), link.id_obj1) {
+            line.x1 = t1_screen_x + (p1.0 * scale);
+            line.y1 = t1_screen_y + (p1.1 * scale);
+            found_src = true;
+        } else if let Some(p1) = find_local_coords(&app.get_tree2_data(), link.id_obj1) {
+            line.x1 = t2_screen_x + (p1.0 * scale);
+            line.y1 = t2_screen_y + (p1.1 * scale);
+            found_src = true;
+        }
+
+        if let Some(p2) = find_local_coords(&app.get_tree1_data(), link.id_obj2) {
+            line.x2 = t1_screen_x + (p2.0 * scale);
+            line.y2 = t1_screen_y + (p2.1 * scale);
+            found_dst = true;
+        } else if let Some(p2) = find_local_coords(&app.get_tree2_data(), link.id_obj2) {
+            line.x2 = t2_screen_x + (p2.0 * scale);
+            line.y2 = t2_screen_y + (p2.1 * scale);
+            found_dst = true;
+        }
+
+        if found_src && found_dst {
+            line.x1 /= scale;
+            line.y1 /= scale;
+            line.x2 /= scale;
+            line.y2 /= scale;
+            updated_links.push(line);
+        }
+    }
+    app.set_active_cad_links(ModelRc::from(Rc::new(VecModel::from(updated_links))));
+}
+
+fn find_local_coords(model: &ModelRc<MyTreeItem>, id: i32) -> Option<(f32, f32)> {
+    for i in 0..model.row_count() {
+        if let Some(item) = model.row_data(i) {
+            if item.id == id {
+                return Some((item.self_triangle_x, item.self_triangle_y));
+            }
+        }
+    }
+    None
+}
+
+fn main() {
+    let app = AppWindow::new().unwrap();
+    let app_weak = app.as_weak();
+
+    let state = Rc::new(RefCell::new(AppState {
+        tree1_items: vec![
+            RawItem {
+                id: 1,
+                text: "Голосовой макрос А".into(),
+                parent_id: 0,
+                is_expanded: true,
+                is_editing: false,
+                note: "".into(),
+                links: vec![],
+            },
+            RawItem {
+                id: 2,
+                text: "Действие: Нажатие".into(),
+                parent_id: 1,
+                is_expanded: true,
+                is_editing: false,
+                note: "".into(),
+                links: vec![],
+            },
+        ],
+        tree2_items: vec![
+            RawItem {
+                id: 10,
+                text: "Голосовой макрос Б".into(),
+                parent_id: 0,
+                is_expanded: true,
+                is_editing: false,
+                note: "".into(),
+                links: vec![],
+            },
+            RawItem {
+                id: 11,
+                text: "Действие: Скрипт".into(),
+                parent_id: 10,
+                is_expanded: true,
+                is_editing: false,
+                note: "".into(),
+                links: vec![],
+            },
+        ],
+        cad_links: Vec::new(),
+        next_id: 500,
+    }));
+
+    update_ui_models(&app, &state.borrow());
+    let s_clone = state.clone();
+    let a_weak = app_weak.clone();
+    app.on_toggle_expand(move |id, tree_idx| {
+        let mut st = s_clone.borrow_mut();
+        let target_vec = if tree_idx == 1 {
+            &mut st.tree1_items
+        } else {
+            &mut st.tree2_items
+        };
+        if let Some(item) = target_vec.iter_mut().find(|i| i.id == id) {
+            item.is_expanded = !item.is_expanded;
+        }
+        update_ui_models(&a_weak.unwrap(), &st);
+    });
+
+    let s_clone = state.clone();
+    let a_weak = app_weak.clone();
+    app.on_trees_geometry_changed(move || {
+        update_ui_models(&a_weak.unwrap(), &s_clone.borrow());
+    });
+
+    let s_clone = state.clone();
+    let a_weak = app_weak.clone();
+    app.on_add_cad_link_mode(move |id, _tree_idx| {
+        let ui = a_weak.unwrap();
+        ui.set_is_linking_mode(true);
+        ui.set_linking_source_node_id(id);
+        update_ui_models(&ui, &s_clone.borrow());
+    });
+
+    let s_clone = state.clone();
+    let a_weak = app_weak.clone();
+    app.on_select_item(move |id, _text, _tree_idx| {
+        let ui = a_weak.unwrap();
+        let mut st = s_clone.borrow_mut();
+
+        if ui.get_is_linking_mode() {
+            let src_id = ui.get_linking_source_node_id();
+            if src_id != id {
+                let link_id = st.next_id;
+                st.next_id += 1;
+                let new_line = CADLine {
+                    id: link_id,
+                    id_obj1: src_id,
+                    id_obj2: id,
+                    x1: 0.0,
+                    y1: 0.0,
+                    x2: 0.0,
+                    y2: 0.0,
+                };
+                if let Some(n) = st
+                    .tree1_items
+                    .iter_mut()
+                    .find(|i| i.id == src_id || i.id == id)
+                {
+                    n.links.push(link_id);
+                }
+                if let Some(n) = st
+                    .tree2_items
+                    .iter_mut()
+                    .find(|i| i.id == src_id || i.id == id)
+                {
+                    n.links.push(link_id);
+                }
+                st.cad_links.push(new_line);
+                ui.set_is_linking_mode(false);
+            }
+        }
+        update_ui_models(&ui, &st);
+    });
+
+    let s_clone = state.clone();
+    let a_weak = app_weak.clone();
+    app.on_key_esc_pressed(move || {
+        let ui = a_weak.unwrap();
+        if ui.get_is_linking_mode() {
+            ui.set_is_linking_mode(false);
+            update_ui_models(&ui, &s_clone.borrow());
+        }
+    });
+
+    let s_clone = state.clone();
+    let a_weak = app_weak.clone();
+    app.on_menu_action(move |action, target_id, tree_idx| {
+        let ui = a_weak.unwrap();
+        let mut st = s_clone.borrow_mut();
+        match action.as_str() {
+            "add" => {
+                let new_id = st.next_id;
+                st.next_id += 1;
+                let items = if tree_idx == 1 {
+                    &mut st.tree1_items
+                } else {
+                    &mut st.tree2_items
+                };
+                items.push(RawItem {
+                    id: new_id,
+                    text: "Новая подкоманда".into(),
+                    parent_id: target_id,
+                    is_expanded: false,
+                    is_editing: true,
+                    note: "".into(),
+                    links: vec![],
+                });
+            }
+            "delete" => {
+                let items = if tree_idx == 1 {
+                    &mut st.tree1_items
+                } else {
+                    &mut st.tree2_items
+                };
+                items.retain(|i| i.id != target_id && i.parent_id != target_id);
+                st.cad_links
+                    .retain(|l| l.id_obj1 != target_id && l.id_obj2 != target_id);
+            }
+            "rename" => {
+                let items = if tree_idx == 1 {
+                    &mut st.tree1_items
+                } else {
+                    &mut st.tree2_items
+                };
+                if let Some(i) = items.iter_mut().find(|i| i.id == target_id) {
+                    i.is_editing = true;
+                }
+            }
+            _ => {}
+        }
+        update_ui_models(&ui, &st);
+    });
+
+    let s_clone = state.clone();
+    let a_weak = app_weak.clone();
+    app.on_finish_rename(move |id, text, tree_idx| {
+        let ui = a_weak.unwrap();
+        let mut st = s_clone.borrow_mut();
+        let items = if tree_idx == 1 {
+            &mut st.tree1_items
+        } else {
+            &mut st.tree2_items
+        };
+        if let Some(i) = items.iter_mut().find(|i| i.id == id) {
+            i.text = text.into();
+            i.is_editing = false;
+        }
+        update_ui_models(&ui, &st);
+    });
+
+    let app_for_win = app.as_weak();
+    slint::invoke_from_event_loop(move || {
+        if let Some(ui) = app_for_win.upgrade() {
+            setup_win32_window(&ui);
+        }
+    })
+    .unwrap();
+
+    app.run().unwrap();
+}
+
+fn setup_win32_window(_app: &AppWindow) {
+    let title: Vec<u16> = "Менеджер команд голосового управления (CAD Среда)"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        if !hwnd.is_null() {
+            ShowWindow(hwnd, 3);
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | 0x0002 | 0x0001 | 0x0004,
+            );
+        }
+    }
+}

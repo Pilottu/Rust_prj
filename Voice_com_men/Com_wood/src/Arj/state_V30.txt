@@ -1,0 +1,164 @@
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
+
+// Все структуры данных приложения (в памяти и для сохранения в SQLite) и
+// логика загрузки/сохранения состояния. PersistedAppState и
+// load_persisted_state специально НЕ публичные — наружу нужен только
+// load_initial_state(), остальное — деталь реализации сохранения.
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RawLink {
+    pub id: i32,
+    pub target_node_id: i32,
+    pub target_node_name: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RawItem {
+    pub id: i32,
+    pub text: String,
+    pub parent_id: i32,
+    pub is_expanded: bool,
+    pub is_editing: bool,
+    pub notes: Vec<String>,
+    pub links: Vec<RawLink>,
+}
+#[derive(Serialize, Deserialize)]
+pub struct ClipboardBranch {
+    pub root_item: RawItem,
+    pub children: Vec<ClipboardBranch>,
+}
+#[derive(Clone, Copy)]
+pub struct Point2D {
+    pub x: f32,
+    pub y: f32,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CADTree {
+    pub id: i32,
+    pub cad_x: f32,
+    pub cad_y: f32,
+    pub width: f32,
+    pub count: i32,
+    pub items: Vec<RawItem>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CADLink {
+    pub id: i32,
+    pub id_obj1: i32,
+    pub id_obj2: i32,
+    pub x1: f32,
+    pub y1: f32,
+    pub x2: f32,
+    pub y2: f32,
+    pub tree_id_1: i32,
+    pub tree_id_2: i32,
+    #[serde(default)]
+    pub side1: i32,
+    #[serde(default)]
+    pub side2: i32,
+    #[serde(default)]
+    pub mid_x: f32,
+}
+pub struct AppState {
+    pub trees: Vec<CADTree>,
+    pub cad_links: Vec<CADLink>,
+    pub selected_node_id: i32,
+    pub active_focus_tree_id: i32,
+    pub history: Vec<Vec<CADTree>>,
+    pub linking_mode: bool,
+    pub linking_source_node_id: i32,
+    pub linking_source_tree_id: i32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PersistedAppState {
+    trees: Vec<CADTree>,
+    cad_links: Vec<CADLink>,
+    selected_node_id: i32,
+    active_focus_tree_id: i32,
+}
+
+fn load_persisted_state() -> Option<PersistedAppState> {
+    let connection = Connection::open("cad_state.db").ok()?;
+    connection
+        .execute(
+            "CREATE TABLE IF NOT EXISTS app_state (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL)",
+            [],
+        )
+        .ok()?;
+    let payload: String = connection
+        .query_row("SELECT payload FROM app_state WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .ok()?;
+    serde_json::from_str(&payload).ok()
+}
+
+pub fn save_persisted_state(state: &AppState) {
+    let persisted = PersistedAppState {
+        trees: state.trees.clone(),
+        cad_links: state.cad_links.clone(),
+        selected_node_id: state.selected_node_id,
+        active_focus_tree_id: state.active_focus_tree_id,
+    };
+    let Ok(payload) = serde_json::to_string(&persisted) else {
+        return;
+    };
+    let Ok(connection) = Connection::open("cad_state.db") else {
+        return;
+    };
+    if connection
+        .execute(
+            "CREATE TABLE IF NOT EXISTS app_state (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL)",
+            [],
+        )
+        .is_ok()
+    {
+        let _ = connection.execute(
+            "INSERT INTO app_state (id, payload) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload",
+            params![payload],
+        );
+    }
+}
+
+pub fn load_initial_state() -> AppState {
+    let default_state = AppState {
+        trees: vec![CADTree {
+            id: 1,
+            cad_x: 40.0,
+            cad_y: 80.0,
+            width: 250.0,
+            count: 1,
+            items: vec![RawItem {
+                id: 1,
+                text: "Основной узел".into(),
+                parent_id: 0,
+                is_expanded: true,
+                is_editing: false,
+                notes: vec!["Главный server управления".to_string()],
+                links: vec![],
+            }],
+        }],
+        cad_links: Vec::new(),
+        selected_node_id: 1,
+        active_focus_tree_id: 1,
+        history: Vec::new(),
+        linking_mode: false,
+        linking_source_node_id: -1,
+        linking_source_tree_id: -1,
+    };
+
+        load_persisted_state()
+        .map(|saved| AppState {
+            trees: saved.trees,
+            cad_links: saved.cad_links,
+            selected_node_id: saved.selected_node_id,
+            active_focus_tree_id: saved.active_focus_tree_id,
+            history: Vec::new(),
+            linking_mode: false,
+            linking_source_node_id: -1,
+            linking_source_tree_id: -1,
+        })
+        .unwrap_or(default_state)
+
+}

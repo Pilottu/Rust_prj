@@ -1,0 +1,93 @@
+import { CADLine } from "cad_types.slint";
+
+export component CADLinkLine inherits Rectangle {
+    in property <CADLine> line;
+    in property <float> scale_factor: 1.0;
+    in property <int> selected_link_id: -1;
+    in property <color> normal_color: #ffcc0060;
+    in property <color> selected_color: #ffcc00;
+    out property <bool> selected: root.selected_link_id == root.line.id;
+
+    callback clicked(int);
+    callback context_menu(int, float, float);
+    // NEW: пробрасываем события средней кнопки мыши (панорамирование) наружу,
+    // так как эти TouchArea перехватывают события раньше, чем они доходят
+    // до общего фонового TouchArea в app.slint.
+    callback pan(PointerEventButton, PointerEventKind, length, length);
+
+    width: 100%;
+    height: 100%;
+
+    property <float> x1_scaled: line.x1 * scale_factor;
+    property <float> y1_scaled: line.y1 * scale_factor;
+    property <float> x2_scaled: line.x2 * scale_factor;
+    property <float> y2_scaled: line.y2 * scale_factor;
+    property <float> mid_x_scaled: line.mid_x * scale_factor;
+    property <length> thickness: (selected ? 2px : 1px) * scale_factor;
+    property <length> hit_size: Math.max(4px * scale_factor, thickness);
+    property <color> stroke: selected ? selected_color : normal_color;
+
+    // горизонтальная левая связующая линия
+    Rectangle {
+        x: Math.min(x1_scaled, mid_x_scaled) * 1px;
+        y: y1_scaled * 1px - thickness / 2 + 1px;
+        width: Math.abs(mid_x_scaled - x1_scaled) * 1px;
+        height: thickness;
+        background: stroke;
+
+        TouchArea {
+            y: -(hit_size - thickness) / 2;
+            height: hit_size;
+            width: 100%;
+            clicked => { root.clicked(root.line.id); }
+            pointer-event(event) => {
+                root.pan(event.button, event.kind, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                    root.context_menu(root.line.id, (self.absolute-position.x + self.mouse-x) / 1px, (self.absolute-position.y + self.mouse-y) / 1px);
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        x: mid_x_scaled * 1px - thickness / 2;
+        y: Math.min(y1_scaled, y2_scaled) * 1px;
+        width: thickness;
+        height: Math.abs(y2_scaled - y1_scaled) * 1px;
+        background: stroke;
+
+        TouchArea {
+            x: -(hit_size - thickness) / 2;
+            width: hit_size;
+            height: 100%;
+            clicked => { root.clicked(root.line.id); }
+            pointer-event(event) => {
+                root.pan(event.button, event.kind, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                    root.context_menu(root.line.id, (self.absolute-position.x + self.mouse-x) / 1px, (self.absolute-position.y + self.mouse-y) / 1px);
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        x: Math.min(mid_x_scaled, x2_scaled) * 1px;
+        y: y2_scaled * 1px - thickness / 2;
+        width: Math.abs(x2_scaled - mid_x_scaled) * 1px;
+        height: thickness;
+        background: stroke;
+
+        TouchArea {
+            y: -(hit_size - thickness) / 2;
+            height: hit_size;
+            width: 100%;
+            clicked => { root.clicked(root.line.id); }
+            pointer-event(event) => {
+                root.pan(event.button, event.kind, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                    root.context_menu(root.line.id, (self.absolute-position.x + self.mouse-x) / 1px, (self.absolute-position.y + self.mouse-y) / 1px);
+                }
+            }
+        }
+    }
+}

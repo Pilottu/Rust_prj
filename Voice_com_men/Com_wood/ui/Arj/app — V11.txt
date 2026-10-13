@@ -1,0 +1,417 @@
+import { Button, VerticalBox, LineEdit, ListView } from "std-widgets.slint";
+
+export struct MyTreeItem {
+    id: int,
+    text: string,
+    depth: int,
+    is-last: bool,
+    has-children: bool,
+    is-expanded: bool,
+    is-editing: bool,
+    parent-is-last: bool,
+    is-selected: bool,
+    note: string,
+    text_width: float,
+    smart_id: string,
+    line_mask: [int],
+    parent-id: int,
+    parent-triangle-x: float,
+    parent-triangle-y: float,
+    self-triangle-x: float,
+    self-triangle-y: float,
+}
+
+export struct CADLine {
+    id: int,
+    id_obj1: int,
+    id_obj2: int,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float
+}
+
+export component AppWindow inherits Window {
+    in-out property <float> scale-factor: 1.0;
+    in-out property <float> window-width: root.width / 1px;
+
+    // Истинные виртуальные CAD-координаты независимых деревьев на холсте
+    in-out property <float> tree1-cad-x: 50.0;
+    in-out property <float> tree1-cad-y: 80.0;
+    in-out property <float> tree1-cad-w: 340.0;
+    in-out property <float> tree1-cad-h: 650.0;
+
+    in-out property <float> tree2-cad-x: 550.0;
+    in-out property <float> tree2-cad-y: 80.0;
+    in-out property <float> tree2-cad-w: 340.0;
+    in-out property <float> tree2-cad-h: 650.0;
+
+    // Экранные свойства, пересчитываемые бэкендом при зуме и панорамировании
+    in-out property <length> tree1-x: 50px;
+    in-out property <length> tree1-y: 80px;
+    in-out property <length> tree2-x: 550px;
+    in-out property <length> tree2-y: 80px;
+
+    in-out property <length> bg-offset-x: 0px;
+    in-out property <length> bg-offset-y: 0px;
+    in-out property <[MyTreeItem]> tree1-data: [];
+    in-out property <[MyTreeItem]> tree2-data: [];
+    in-out property <[CADLine]> active-cad-links: [];
+
+    in-out property <bool> menu-visible: false;
+    in-out property <length> menu-x: 0px;
+    in-out property <length> menu-y: 0px;
+    in-out property <int> menu-target-id: 0;
+    in-out property <int> menu-source-tree: 1;
+    in-out property <bool> is-linking-mode: false;
+    in-out property <int> linking-source-node-id: -1;
+
+    property <length> drag-start-x: 0px;
+    property <length> drag-start-y: 0px;
+    property <bool> is-dragging-middle: false;
+
+    callback toggle-expand(int, int);
+    callback finish-rename(int, string, int);
+    callback select-item(int, string, int);
+    callback menu-action(string, int, int);
+    callback add-cad-link-mode(int, int);
+    callback item-double-clicked(int, int);
+    callback key-esc-pressed();
+    callback trees-geometry-changed();
+
+    min-width: 900px;
+    min-height: 600px;
+    preferred-width: 1200px;
+    preferred-height: 750px;
+    background: #131317;
+    title: "Менеджер команд голосового управления (CAD Среда)";
+
+    // Фоновый слой захвата мыши для общего сдвига и зума пространства (z: 1)
+    TouchArea {
+        width: 100%; height: 100%;
+        clicked => { root.menu-visible = false; }
+        scroll-event(evt) => {
+            if (!root.is-dragging-middle) {
+                if (evt.delta-y > 0) {
+                    root.scale-factor = Math.min(2.5, root.scale-factor + 0.05);
+                } else {
+                    root.scale-factor = Math.max(0.4, root.scale-factor - 0.05);
+                }
+                root.trees-geometry-changed(); 
+            }
+            accept;
+        }
+        pointer-event(evt) => {
+            if (evt.button == PointerEventButton.middle) {
+                if (evt.kind == PointerEventKind.down) {
+                    root.is-dragging-middle = true;
+                    root.drag-start-x = self.mouse-x;
+                    root.drag-start-y = self.mouse-y;
+                }
+                if (evt.kind == PointerEventKind.up) { root.is-dragging-middle = false; }
+            }
+            if (evt.kind == PointerEventKind.move) {
+                if (root.is-dragging-middle) {
+                    root.bg-offset-x += self.mouse-x - root.drag-start-x;
+                    root.bg-offset-y += self.mouse-y - root.drag-start-y;
+                    root.drag-start-x = self.mouse-x;
+                    root.drag-start-y = self.mouse-y;
+                    root.trees-geometry-changed();
+                }
+            }
+        }
+    }
+
+    MainFocusArea := FocusScope {
+        width: 100%; height: 100%;
+        init => { self.focus(); }
+        key-pressed(evt) => {
+            if (evt.text == Key.Escape) { root.key-esc-pressed(); accept; }
+            reject;
+        }
+
+        Rectangle {
+            width: 100%; height: 100%;
+
+            if root.is-linking-mode : Rectangle {
+                x: 12px; y: 12px; z: 800;
+                width: parent.width - 24px;
+                background: #1b4d22;
+                border-radius: 4px;
+                height: 34px;
+                Text {
+                    x: 15px;
+                    text: "🔗 РЕЖИМ СВЯЗИ АКТИВИРОВАН: Выберите целевой овал. Нажмите ESC для отмены.";
+                    color: #00ff00;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+
+            // СЛОЙ №2: ГЛОБАЛЬНЫЕ СВЯЗИ ("ЩУПАЛЬЦА") МЕЖДУ ДЕРЕВЬЯМИ
+            Rectangle {
+                width: 100%; height: 100%;
+                z: 10;
+                
+                for line in root.active-cad-links : Path {
+                    stroke: #4bf5a3;
+                    stroke-width: 2px * root.scale-factor; 
+                    opacity: 0.85;
+                    width: 100%; height: 100%;
+                    
+                    commands: "M " + (line.x1 * root.scale-factor) + " " + (line.y1 * root.scale-factor) + 
+                              " L " + (((line.x1 + line.x2) / 2) * root.scale-factor) + " " + (line.y1 * root.scale-factor) + 
+                              " L " + (((line.x1 + line.x2) / 2) * root.scale-factor) + " " + (line.y2 * root.scale-factor) + 
+                              " L " + (line.x2 * root.scale-factor) + " " + (line.y2 * root.scale-factor);
+                }
+            }
+            // СЛОЙ №3: ОВЕРЛЕЙ НЕЗАВИСИМЫХ ДЕРЕВЬЕВ (ВЕРХНИЙ СЛОЙ)
+            Rectangle {
+                width: 100%; height: 100%;
+                z: 100;
+
+                // --- КОНТЕКСТ И ОРИГИНАЛЬНАЯ ЛОГИКА ДЕРЕВА 1 ---
+                w1-container := Rectangle {
+                    x: root.tree1-x; y: root.tree1-y;
+                    width: root.tree1-cad-w * root.scale-factor * 1px;
+                    height: root.tree1-cad-h * root.scale-factor * 1px;
+                    border-width: 1px; border-color: #ffaa0030;
+                    
+                    TouchArea {
+                        x: 0px; y: 0px; width: 35px; height: 35px; z: 150;
+                        property <float> t1-start-x; property <float> t1-start-y;
+                        pointer-event(evt) => {
+                            if (evt.button == PointerEventButton.left) {
+                                if (evt.kind == PointerEventKind.down) {
+                                    self.t1-start-x = self.mouse-x / 1px;
+                                    self.t1-start-y = self.mouse-y / 1px;
+                                }
+                            }
+                            if (evt.kind == PointerEventKind.move && evt.button == PointerEventButton.left) {
+                                let dx = (self.mouse-x / 1px - self.t1-start-x) / root.scale-factor;
+                                let dy = (self.mouse-y / 1px - self.t1-start-y) / root.scale-factor;
+                                let next-x = root.tree1-cad-x + dx;
+                                if (next-x + root.tree1-cad-w < root.tree2-cad-x - 50.0 || next-x > root.tree2-cad-x + root.tree2-cad-w + 50.0) {
+                                    root.tree1-cad-x = next-x;
+                                }
+                                root.tree1-cad-y += dy;
+                                root.trees-geometry-changed();
+                            }
+                        }
+                        Rectangle { width: 12px; height: 12px; background: #ffaa00; border-radius: 2px; x: 4px; y: 4px; }
+                    }
+
+                    // ПОЛНЫЙ ОРИГИНАЛЬНЫЙ ЦИКЛ, ОТРИСОВКА НАПРАВЛЯЮЩИХ И ОВАЛОВ ДЕРЕВА 1
+                    for item[item-index] in root.tree1-data : Rectangle {
+                        y: (item-index * 32px) * root.scale-factor;
+                        height: 32px * root.scale-factor;
+                        width: parent.width;
+
+                        // Отрисовка сквозных вертикальных линий по оригинальной маске уровней line-mask
+                        for mask-val[mask-idx] in item.line_mask : Rectangle {
+                            if (mask-idx < item.depth && mask-val != 0) : Rectangle {
+                                x: (10px + mask-idx * 24px + 10px) * root.scale-factor;
+                                y: 0px; width: 1px * root.scale-factor; height: 100%;
+                                background: #ffffff20;
+                            }
+                        }
+
+                        // Отрисовка оригинального изгиба ветвления текущей ноды через Path
+                        if (item.depth > 0) : Rectangle {
+                            x: (10px + (item.depth - 1) * 24px + 10px) * root.scale-factor;
+                            y: 0px; width: 24px * root.scale-factor; height: 100%;
+                            Path {
+                                width: 100%; height: 100%; stroke: #ffffff20;
+                                stroke-width: 1px * root.scale-factor;
+                                viewbox-width: 24; viewbox-height: 32;
+                                commands: item.is-last ? "M 0 0 L 0 16 Q 0 20 12 20 L 24 20" : "M 0 0 L 0 32 M 0 16 Q 0 20 12 20 L 24 20";
+                            }
+                        }
+
+                        row-focus1 := FocusScope {}
+                        row-touch1 := TouchArea {
+                            z: 50; width: parent.width; height: 100%;
+                            clicked => {
+                                if (animation-tick() - last-click < 350ms && last-id == item.id) { root.item-double-clicked(item.id, 1); }
+                                else { root.select-item(item.id, item.text, 1); row-focus1.focus(); }
+                                last-click = animation-tick(); last-id = item.id;
+                            }
+                            pointer-event(evt) => {
+                                if (evt.button == PointerEventButton.right && evt.kind == PointerEventKind.down) {
+                                    root.select-item(item.id, item.text, 1);
+                                    root.menu-target-id = item.id; root.menu-source-tree = 1;
+                                    root.menu-x = self.mouse-x + w1-container.x; root.menu-y = self.mouse-y + parent.y + w1-container.y;
+                                    root.menu-visible = true;
+                                }
+                            }
+                            property <duration> last-click: 0ms; property <int> last-id: -1;
+                        }
+
+                        Rectangle {
+                            x: (10px + item.depth * 24px) * root.scale-factor;
+                            width: 20px * root.scale-factor; height: 100%; z: 60;
+                            if (item.has-children) : TouchArea {
+                                width: 100%; height: 100%; clicked => { root.toggle-expand(item.id, 1); }
+                                Text { text: item.is-expanded ? "▼ " : "▶ "; color: #ffffffba; font-size: 11px * root.scale-factor; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                        }
+
+                        row-bg1 := Rectangle {
+                            x: (10px + item.depth * 24px + 20px) * root.scale-factor;
+                            y: 4px * root.scale-factor; height: 24px * root.scale-factor;
+                            width: item.is-editing ? 160px * root.scale-factor : (text-node1.preferred-width + 20px * root.scale-factor);
+                            border-radius: 12px * root.scale-factor;
+                            border-width: item.is-selected ? 2px * root.scale-factor : 1px * root.scale-factor;
+                            border-color: item.is-selected ? #ffd700 : #ffffff25;
+                            background: item.is-selected ? #ffd70015 : #ffffff05;
+
+                            HorizontalLayout {
+                                padding-left: 10px * root.scale-factor; padding-right: 10px * root.scale-factor; opacity: item.is-editing ? 0 : 1;
+                                text-node1 := Text { text: item.text; color: item.is-selected ? #ffffff : #e0e0e0; font-size: 14px * root.scale-factor; vertical-alignment: center; }
+                            }
+                            if (item.is-editing) : edit-field1 := LineEdit {
+                                text: item.text; width: 100%; height: 100%; font-size: 13px * root.scale-factor;
+                                accepted => { root.finish-rename(item.id, edit-field1.text, 1); }
+                                init => { edit-field1.focus(); edit-field1.select-all(); }
+                            }
+                        }
+                    }
+                }
+                // --- КОНТЕКСТ И ОРИГИНАЛЬНАЯ ЛОГИКА ДЕРЕВА 2 ---
+                w2-container := Rectangle {
+                    x: root.tree2-x; y: root.tree2-y;
+                    width: root.tree2-cad-w * root.scale-factor * 1px;
+                    height: root.tree2-cad-h * root.scale-factor * 1px;
+                    border-width: 1px; border-color: #00aaff30;
+
+                    TouchArea {
+                        x: 0px; y: 0px; width: 35px; height: 35px; z: 150;
+                        property <float> t2-start-x; property <float> t2-start-y;
+                        pointer-event(evt) => {
+                            if (evt.button == PointerEventButton.left) {
+                                if (evt.kind == PointerEventKind.down) {
+                                    self.t2-start-x = self.mouse-x / 1px;
+                                    self.t2-start-y = self.mouse-y / 1px;
+                                }
+                            }
+                            if (evt.kind == PointerEventKind.move && evt.button == PointerEventButton.left) {
+                                let dx = (self.mouse-x / 1px - self.t2-start-x) / root.scale-factor;
+                                let dy = (self.mouse-y / 1px - self.t2-start-y) / root.scale-factor;
+                                let next-x = root.tree2-cad-x + dx;
+                                if (next-x > root.tree1-cad-x + root.tree1-cad-w + 50.0 || next-x + root.tree2-cad-w < root.tree1-cad-x - 50.0) {
+                                    root.tree2-cad-x = next-x;
+                                }
+                                root.tree2-cad-y += dy;
+                                root.trees-geometry-changed();
+                            }
+                        }
+                        Rectangle { width: 12px; height: 12px; background: #00aaff; border-radius: 2px; x: 4px; y: 4px; }
+                    }
+
+                    // ПОЛНЫЙ ОРИГИНАЛЬНЫЙ ЦИКЛ, ОТРИСОВКА НАПРАВЛЯЮЩИХ И ОВАЛОВ ДЕРЕВА 2
+                    for item[item-index] in root.tree2-data : Rectangle {
+                        y: (item-index * 32px) * root.scale-factor;
+                        height: 32px * root.scale-factor;
+                        width: parent.width;
+
+                        for mask-val[mask-idx] in item.line_mask : Rectangle {
+                            if (mask-idx < item.depth && mask-val != 0) : Rectangle {
+                                x: (10px + mask-idx * 24px + 10px) * root.scale-factor;
+                                y: 0px; width: 1px * root.scale-factor; height: 100%;
+                                background: #ffffff20;
+                            }
+                        }
+
+                        if (item.depth > 0) : Rectangle {
+                            x: (10px + (item.depth - 1) * 24px + 10px) * root.scale-factor;
+                            y: 0px; width: 24px * root.scale-factor; height: 100%;
+                            Path {
+                                width: 100%; height: 100%; stroke: #ffffff20;
+                                stroke-width: 1px * root.scale-factor;
+                                viewbox-width: 24; viewbox-height: 32;
+                                commands: item.is-last ? "M 0 0 L 0 16 Q 0 20 12 20 L 24 20" : "M 0 0 L 0 32 M 0 16 Q 0 20 12 20 L 24 20";
+                            }
+                        }
+
+                        row-focus2 := FocusScope {}
+                        row-touch2 := TouchArea {
+                            z: 50; width: parent.width; height: 100%;
+                            clicked => {
+                                if (animation-tick() - last-click < 350ms && last-id == item.id) { root.item-double-clicked(item.id, 2); }
+                                else { root.select-item(item.id, item.text, 2); row-focus2.focus(); }
+                                last-click = animation-tick(); last-id = item.id;
+                            }
+                            pointer-event(evt) => {
+                                if (evt.button == PointerEventButton.right && evt.kind == PointerEventKind.down) {
+                                    root.select-item(item.id, item.text, 2);
+                                    root.menu-target-id = item.id; root.menu-source-tree = 2;
+                                    root.menu-x = self.mouse-x + w2-container.x; root.menu-y = self.mouse-y + parent.y + w2-container.y;
+                                    root.menu-visible = true;
+                                }
+                            }
+                            property <duration> last-click: 0ms; property <int> last-id: -1;
+                        }
+
+                        Rectangle {
+                            x: (10px + item.depth * 24px) * root.scale-factor;
+                            width: 20px * root.scale-factor; height: 100%; z: 60;
+                            if (item.has-children) : TouchArea {
+                                width: 100%; height: 100%; clicked => { root.toggle-expand(item.id, 2); }
+                                Text { text: item.is-expanded ? "▼ " : "▶ "; color: #ffffffba; font-size: 11px * root.scale-factor; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                        }
+
+                        row-bg2 := Rectangle {
+                            x: (10px + item.depth * 24px + 20px) * root.scale-factor;
+                            y: 4px * root.scale-factor; height: 24px * root.scale-factor;
+                            width: item.is-editing ? 160px * root.scale-factor : (text-node2.preferred-width + 20px * root.scale-factor);
+                            border-radius: 12px * root.scale-factor;
+                            border-width: item.is-selected ? 2px * root.scale-factor : 1px * root.scale-factor;
+                            border-color: item.is-selected ? #ffd700 : #ffffff25;
+                            background: item.is-selected ? #ffd70015 : #ffffff05;
+
+                            HorizontalLayout {
+                                padding-left: 10px * root.scale-factor; padding-right: 10px * root.scale-factor; opacity: item.is-editing ? 0 : 1;
+                                text-node2 := Text { text: item.text; color: item.is-selected ? #ffffff : #e0e0e0; font-size: 14px * root.scale-factor; vertical-alignment: center; }
+                            }
+                            if (item.is-editing) : edit-field2 := LineEdit {
+                                text: item.text; width: 100%; height: 100%; font-size: 13px * root.scale-factor;
+                                accepted => { root.finish-rename(item.id, edit-field2.text, 2); }
+                                init => { edit-field2.focus(); edit-field2.select-all(); }
+                            }
+                        }
+                    }
+                }
+            }
+            if (root.menu-visible) : Rectangle {
+                x: root.menu-x; y: root.menu-y;
+                width: 180px; height: 130px;
+                background: #1e1e24; border-radius: 4px; border-width: 1px; border-color: #ffffff20; z: 999;
+                TouchArea { width: 100%; height: 100%; clicked => { root.menu-visible = false; } }
+                VerticalBox {
+                    padding: 6px; spacing: 4px;
+                    TouchArea {
+                        height: 26px; clicked => { root.menu-visible = false; root.menu-action("add", root.menu-target-id, root.menu-source-tree); }
+                        Rectangle { background: parent.has-hover ? #ffffff15 : #00000000; border-radius: 2px; }
+                        Text { text: "➕ Добавить узел"; color: white; font-size: 13px; x: 6px; vertical-alignment: center; }
+                    }
+                    TouchArea {
+                        height: 26px; clicked => { root.menu-visible = false; root.add-cad-link-mode(root.menu-target-id, root.menu-source-tree); }
+                        Rectangle { background: parent.has-hover ? #4bf5a325 : #00000000; border-radius: 2px; }
+                        Text { text: "🔗 Добавить связь..."; color: #4bf5a3; font-size: 13px; x: 6px; vertical-alignment: center; }
+                    }
+                    TouchArea {
+                        height: 26px; clicked => { root.menu-visible = false; root.menu-action("rename", root.menu-target-id, root.menu-source-tree); }
+                        Rectangle { background: parent.has-hover ? #ffffff15 : #00000000; border-radius: 2px; }
+                        Text { text: "✏ Переименовать"; color: white; font-size: 13px; x: 6px; vertical-alignment: center; }
+                    }
+                    TouchArea {
+                        height: 26px; clicked => { root.menu-visible = false; root.menu-action("delete", root.menu-target-id, root.menu-source-tree); }
+                        Rectangle { background: parent.has-hover ? #ff555530 : #ffffff05; border-radius: 2px; }
+                        Text { text: "❌ Удалить узел"; color: #ff5555; font-size: 13px; x: 6px; vertical-alignment: center; }
+                    }
+                }
+            }
+        }
+    }
+}

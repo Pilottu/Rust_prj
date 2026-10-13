@@ -1,0 +1,27 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+use std::{cell::RefCell, rc::Rc};
+
+use slint::ComponentHandle;
+
+slint::include_modules!();
+
+mod state;
+mod repository;
+mod tree_ops;
+mod ui_bridge;
+mod win_native;
+mod historian;
+
+fn main() {
+    let app = AppWindow::new().unwrap();
+
+    let state = Rc::new(RefCell::new(state::load_initial_state()));
+    tree_ops::update_ui_models(&app, &state.borrow());
+
+    ui_bridge::wire_callbacks(&app, &state);
+
+    win_native::fix_window_chrome(app.as_weak());
+    win_native::spawn_hotkey_thread(app.as_weak());
+
+    app.run().unwrap();
+}

@@ -1,0 +1,106 @@
+import { Button, VerticalBox } from "std-widgets.slint";
+
+// Три маленьких контекстных меню (список действий + позиция). Каждое меню
+// не трогает состояние AppWindow напрямую — только эмиттит именованные
+// callback'и, а вся логика (menu_action, флаги видимости и т.д.) остаётся
+// в app.slint, один в один как было раньше — просто вызывается из хендлера
+// вместо инлайн-тела внутри TouchArea.
+
+export component NodeMenu inherits Rectangle {
+    callback add_node();
+    callback add_link();
+    callback rename();
+    callback show_properties();
+    callback delete_node();
+
+    width: 175px;
+    height: 162px;
+    background: #1e1e24;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: #ffffff20;
+    z: 1200;
+    VerticalBox {
+        padding: 5px;
+        spacing: 2px;
+        TouchArea {
+            height: 28px;
+            clicked => { root.add_node(); }
+            Text { text: "Добавить узел"; color: white; font-size: 13px; x: 8px; vertical-alignment: center; }
+        }
+        TouchArea {
+            height: 28px;
+            clicked => { root.add_link(); }
+            Text { text: " Добавить связь..."; color: #55ffff; font-size: 13px; x: 8px; vertical-alignment: center; }
+        }
+        TouchArea {
+            height: 28px;
+            clicked => { root.rename(); }
+            Text { text: "✏ Переименовать"; color: white; font-size: 13px; x: 8px; vertical-alignment: center; }
+        }
+        TouchArea {
+            height: 28px;
+            clicked => { root.show_properties(); }
+            Text { text: " Свойства узла"; color: #ffd700; font-size: 13px; x: 8px; vertical-alignment: center; }
+        }
+        TouchArea {
+            height: 28px;
+            clicked => { root.delete_node(); }
+            Text { text: " Удалить узел"; color: #ff5555; font-size: 13px; x: 8px; vertical-alignment: center; }
+        }
+    }
+}
+
+export component LinkMenu inherits Rectangle {
+    callback show_properties();
+    callback delete_link();
+
+    width: 175px;
+    height: 66px;
+    background: #1e1e24;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: #ffffff20;
+    z: 1200;
+    VerticalBox {
+        padding: 5px;
+        spacing: 2px;
+        TouchArea {
+            height: 28px;
+            clicked => { root.show_properties(); }
+            Text { text: " Свойства"; color: #ffd700; font-size: 13px; x: 8px; vertical-alignment: center; }
+        }
+        TouchArea {
+            height: 28px;
+            clicked => { root.delete_link(); }
+            Text { text: " Удалить"; color: #ff5555; font-size: 13px; x: 8px; vertical-alignment: center; }
+        }
+    }
+}
+
+export component RootMenu inherits Rectangle {
+    callback show_properties();
+    callback delete_tree();
+
+    width: 230px;
+    height: 66px;
+    background: #1e1e24;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: #ffffff20;
+    z: 1200;
+    VerticalBox {
+        padding: 5px;
+        spacing: 2px;
+        TouchArea {
+            height: 28px;
+            clicked => { root.show_properties(); }
+            Text { text: " Свойства основного узла"; color: #ffd700; font-size: 13px; x: 8px; vertical-alignment: center; }
+        }
+        TouchArea {
+            height: 28px;
+            clicked => { root.delete_tree(); }
+            Text { text: " Удалить дерево"; color: #ff5555; font-size: 13px; x: 8px; vertical-alignment: center; }
+        }
+    }
+}

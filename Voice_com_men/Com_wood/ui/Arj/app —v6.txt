@@ -1,0 +1,451 @@
+import { Button, VerticalBox, LineEdit, ListView } from "std-widgets.slint"; 
+
+struct MyTreeItem {
+id: int,
+text: string,
+depth: int,
+is-last: bool,
+has-children: bool,
+is-expanded: bool,
+is-editing: bool,
+parent-is-last: bool,
+is-selected: bool,
+note: string,
+text_width: float,
+smart_id: string,
+line_mask: [int],
+} 
+
+struct NodeLinkItem {
+id: int,
+target_id: int,
+target_name: string,
+} 
+
+export component AppWindow inherits Window {
+in-out property < float > scale-factor: 1.0;
+in-out property < length > tree-offset-x: 0px;
+in-out property < length > tree-offset-y: 0px;
+property < length > drag-start-x: 0px;
+property < length > drag-start-y: 0px;
+property < bool > is-dragging-middle: false; 
+
+min-width: 450px;
+min-height: 350px;
+preferred-width: 780px;
+preferred-height: 560px;
+background: #18181c;
+title: "Менеджер команд голосового управления";
+
+in-out property < [MyTreeItem] > tree-data: [];
+in-out property < length > tree-width: 250px;
+in-out property < bool > menu-visible: false;
+in-out property < length > menu-x: 0px;
+in-out property < length > menu-y: 0px;
+in-out property < int > menu-target-id: 0;
+
+in-out property < bool > confirm-visible: false;
+in-out property < string > confirm-text: "";
+in-out property < bool > properties-visible: false;
+in-out property < string > properties-text: "";
+in-out property < string > tooltip-text: "";
+in-out property < int > tooltip-index: -1;
+in-out property < length > tooltip-x: 0px;
+in-out property < length > tooltip-y: 0px;
+in-out property < bool > tooltip-visible: false;
+
+in-out property < length > target-item-x: 0px;
+in-out property < length > target-item-w: 0px;
+in-out property < int > active-tab: 0;
+in-out property < [NodeLinkItem] > node-links-data: [];
+
+callback toggle-expand(int);
+callback start-rename(int);
+callback finish-rename(int, string);
+callback select-item(int, string);
+callback show-menu(int, length, length);
+callback menu-action(string, int);
+callback change-note(int, string);
+callback hover-item(int, int, float, float);
+callback update-mouse-pos(length, length);
+callback add-node-link(int, int);
+callback delete-node-link(int, int);
+callback undo-action();
+
+public function invoke_undo_action() { root.undo-action(); }
+
+TouchArea {
+width: 100%;
+height: 100%;
+clicked => { root.menu-visible = false; }
+scroll-event(evt) => {
+    if (!root.is-dragging-middle) {
+        if (evt.delta-y > 0) { 
+            root.scale-factor = Math.min(2.5, root.scale-factor + 0.05); 
+        } else { 
+            root.scale-factor = Math.max(0.4, root.scale-factor - 0.05); 
+        }
+    }
+    accept;
+}
+
+pointer-event(evt) => {
+    if (evt.button == PointerEventButton.middle) {
+        if (evt.kind == PointerEventKind.down) {
+            root.is-dragging-middle = true; 
+            root.drag-start-x = self.mouse-x; 
+            root.drag-start-y = self.mouse-y;
+        }
+        if (evt.kind == PointerEventKind.up) { 
+            root.is-dragging-middle = false; 
+        }
+    }
+    if (evt.kind == PointerEventKind.move) {
+        root.update-mouse-pos(self.mouse-x, self.mouse-y);
+        if (root.is-dragging-middle) {
+            root.tree-offset-x += self.mouse-x - root.drag-start-x; 
+            root.tree-offset-y += self.mouse-y - root.drag-start-y;
+            root.drag-start-x = self.mouse-x; 
+            root.drag-start-y = self.mouse-y;
+        }
+    }
+}
+
+}HorizontalLayout {
+padding-left: 25px * root.scale-factor + root.tree-offset-x;
+padding-top: 25px * root.scale-factor + root.tree-offset-y;
+spacing: 20px * root.scale-factor;
+alignment: start; 
+
+VerticalLayout {
+width: root.tree-width * root.scale-factor;
+spacing: 15px * root.scale-factor;
+alignment: start;
+Text { 
+    text: "Список локаций"; 
+    font-size: 18px * root.scale-factor; 
+    font-weight: 700; 
+    color: white; 
+}
+
+tree-box := Rectangle {
+    background: #202026; 
+    border-radius: 8px * root.scale-factor; 
+    border-width: 1px * root.scale-factor; 
+    border-color: #ffffff10; 
+    width: root.tree-width * root.scale-factor;
+    height: (root.tree-data.length * 32px + 16px) * root.scale-factor;
+
+    // СЛОЙ ЧИСТОЙ ВЕКТОРНОЙ МАТЕМАТИКИ БЕЗ КОСТЫЛЬНЫХ ЦИКЛОВ МАСОК
+    Rectangle {
+        x: 8px * root.scale-factor;
+        y: 8px * root.scale-factor;
+        width: parent.width - 16px * root.scale-factor;
+        height: parent.height - 16px * root.scale-factor;
+
+        for item[item-index] in root.tree-data : Rectangle {
+            if (item.depth > 0) : Rectangle {
+                x: 0px;
+                y: 0px;
+                width: 100%;
+                height: 100%;
+
+                // ОБЪЕДИНЕННАЯ ГРАФИКА: Ветвление промежуточных узлов вместе со стволом
+                if (!item.is-last) : Path {
+                    x: (25px + (item.depth - 1) * 24px) * root.scale-factor;
+                    y: ((item-index - 1) * 32px + 16px) * root.scale-factor;
+                    width: 24px * root.scale-factor;
+                    height: 48px * root.scale-factor;
+                    stroke: #ffffff30; 
+                    stroke-width: 1px * root.scale-factor;
+                    // Линия начинается строго в нуле родительской оси и непрерывно идет до конца шага
+                    commands: "M 0 0 L 0 48 M 0 32 L 24 32";
+                }
+
+                // ОБЪЕДИНЕННАЯ ГРАФИКА: Скругленная дуга последних элементов вместе со стволом
+                if (item.is-last) : Path {
+                    x: (25px + (item.depth - 1) * 24px) * root.scale-factor;
+                    y: ((item-index - 1) * 32px + 16px) * root.scale-factor;
+                    width: 24px * root.scale-factor;
+                    height: 32px * root.scale-factor;
+                    stroke: #ffffff30; 
+                    stroke-width: 1px * root.scale-factor;
+                    // Линия монолитно доходит до скругления и уходит на полку к тексту ноды
+                    commands: "M 0 0 L 0 24 A 8 8 0 0 0 8 32 L 24 32";
+                }
+            }
+        }
+    }ListView {
+        x: 8px * root.scale-factor; 
+        y: 8px * root.scale-factor;
+        width: parent.width - 16px * root.scale-factor; 
+        height: parent.height - 16px * root.scale-factor;
+
+        for item[item-index] in root.tree-data : Rectangle {
+            height: 32px * root.scale-factor; 
+            width: parent.width;
+
+            row-focus-scope := FocusScope {}
+            row-touch := TouchArea {
+                height: 32px * root.scale-factor;
+                clicked => { 
+                    root.menu-visible = false; 
+                    root.select-item(item.id, item.text); 
+                    row-focus-scope.focus(); 
+                }
+                double-clicked => { root.start-rename(item.id); }
+                pointer-event(evt) => {
+                    if (evt.button == PointerEventButton.right && evt.kind == PointerEventKind.down) {
+                        root.select-item(item.id, item.text); 
+                        row-focus-scope.focus();
+                        root.show-menu(item.id, 
+                            25px * root.scale-factor + item.depth * 24px * root.scale-factor + row-touch.mouse-x + root.tree-offset-x, 
+                            65px * root.scale-factor + item-index * 32px * root.scale-factor + row-touch.mouse-y + root.tree-offset-y
+                        );
+                    }
+                }
+                changed has-hover => {
+                    if (self.has-hover && item.note != "") {
+                        root.target-item-x = 15px * root.scale-factor + row-bg.x; 
+                        root.target-item-w = row-bg.width;
+                        root.hover-item(item.id, item-index, 0.0, 0.0);
+                    }
+                    if (!self.has-hover) { root.hover-item(-1, -1, 0.0, 0.0); }
+                }
+            }
+
+            HorizontalLayout {
+                padding-left: (15px + item.depth * 24px) * root.scale-factor; 
+                spacing: 0px;
+                alignment: start; 
+
+                Rectangle {
+                    width: 20px * root.scale-factor; 
+                    height: 32px * root.scale-factor; 
+                    z: 150;
+                    if (item.has-children) : TouchArea {
+                        width: 100%; 
+                        height: 100%; 
+                        clicked => { root.toggle-expand(item.id); }
+                        Text { 
+                            text: item.is-expanded ? "▼ " : "▶ "; 
+                            color: #ffffffba; 
+                            font-size: 11px * root.scale-factor; 
+                            horizontal-alignment: center; 
+                            vertical-alignment: center; 
+                        }
+                    }
+                }
+
+                Rectangle { width: 24px * root.scale-factor; height: 32px * root.scale-factor; z: 150; }
+                Rectangle { width: 8px * root.scale-factor; }
+
+                row-bg := Rectangle {
+                    border-width: item.is-selected ? 2px * root.scale-factor : 1px * root.scale-factor;
+                    border-color: item.is-selected ? #ffd700 : #ffffff25; 
+                    border-radius: 12px * root.scale-factor;
+                    background: item.is-selected ? #ffd70015 : #ffffff05; 
+                    height: 24px * root.scale-factor; 
+                    y: 4px * root.scale-factor; 
+                    width: item.is-editing ? 160px * root.scale-factor : (text-box.preferred-width + 20px * root.scale-factor);
+                    
+                    HorizontalLayout {
+                        padding-left: 10px * root.scale-factor; 
+                        padding-right: 10px * root.scale-factor;
+                        opacity: item.is-editing ? 0 : 1;
+                        text-box := Text { 
+                            text: item.text; 
+                            color: item.is-selected ? #ffffff : #e0e0e0;
+                            font-size: 14px * root.scale-factor; 
+                            font-weight: item.is-selected ? 700 : 400; 
+                            vertical-alignment: center; 
+                        }
+                    }
+                    if (item.is-editing) : edit-field := LineEdit { 
+                        text: item.text; 
+                        width: 100%; 
+                        height: 100%; 
+                        accepted => { root.finish-rename(item.id, edit-field.text); } 
+                        init => { edit-field.focus(); edit-field.select-all(); } 
+                    }
+                }
+            }
+        }
+    }
+}
+
+}
+
+}if (root.tooltip-index != -1 && root.tooltip-visible) : Rectangle {
+x: root.target-item-x + root.target-item-w + 1px * root.scale-factor;
+y: (8px + root.tooltip-index * 32px - 16px) * root.scale-factor;
+width: Math.min(220px, global-text-layout.preferred-width + 16px);
+background: #2d2d35;
+border-radius: 4px;
+border-width: 1px;
+border-color: #ffffff25;
+z: 999;
+global-text-layout := Text { 
+    text: root.tooltip-text; 
+    color: #ffd700; 
+    font-size: 12px; 
+    x: 8px; 
+    y: 4px;
+    wrap: word-wrap; 
+    width: parent.width - 16px; 
+}
+height: global-text-layout.preferred-height + 8px;
+
+}
+
+if (root.menu-visible) : Rectangle {
+x: root.menu-x;
+y: root.menu-y;
+width: 175px;
+height: 162px;
+background: #1e1e24;
+border-radius: 4px;
+border-width: 1px;
+border-color: #ffffff20;
+z: 200;
+VerticalBox {
+    padding: 5px; 
+    spacing: 2px;
+    
+    TouchArea { 
+        height: 28px; 
+        clicked => { root.menu-action("add", root.menu-target-id); root.menu-visible = false; } 
+        Rectangle { background: parent.has-hover ? #ffffff15 : #00000000; border-radius: 2px; } 
+        Text { text: " Добавить локацию"; color: white; font-size: 13px; x: 8px; vertical-alignment: center; } 
+    }
+    TouchArea { 
+        height: 28px; 
+        clicked => { root.add-node-link(root.menu-target-id, 1); root.menu-visible = false; } 
+        Rectangle { background: parent.has-hover ? #ffffff15 : #00000000; border-radius: 2px; } 
+        Text { text: " Добавить связь..."; color: #55ffff; font-size: 13px; x: 8px; vertical-alignment: center; } 
+    }
+    TouchArea { 
+        height: 28px; 
+        clicked => { root.menu-action("rename", root.menu-target-id); root.menu-visible = false; } 
+        Rectangle { background: parent.has-hover ? #ffffff15 : #00000000; border-radius: 2px; } 
+        Text { text: "✏ Переименовать"; color: white; font-size: 13px; x: 8px; vertical-alignment: center; } 
+    }
+    TouchArea { 
+        height: 28px; 
+        clicked => { root.menu-action("properties", root.menu-target-id); root.menu-visible = false; } 
+        Rectangle { background: parent.has-hover ? #ffffff15 : #00000000; border-radius: 4px; } 
+        Text { text: " Свойства"; color: #ffd700; font-size: 13px; x: 8px; vertical-alignment: center; } 
+    }
+    TouchArea { 
+        height: 28px; 
+        clicked => { root.menu-action("delete", root.menu-target-id); root.menu-visible = false; } 
+        Rectangle { background: parent.has-hover ? #ff555530 : #ffffff05; border-radius: 4px; } 
+        Text { text: " Удалить локацию"; color: #ff5555; font-size: 13px; x: 8px; vertical-alignment: center; } 
+    }
+}
+
+}
+
+if (root.properties-visible) : Rectangle {
+width: 100%;
+height: 100%;
+background: #000000a0;
+z: 250;
+Rectangle {
+    width: 440px; 
+    height: 320px; 
+    background: #1e1e24; 
+    border-radius: 8px; 
+    border-width: 1px;
+    border-color: #ffffff20;
+    
+    VerticalLayout {
+        padding: 15px; 
+        spacing: 12px;
+        
+        HorizontalLayout {
+            height: 32px; 
+            spacing: 5px;
+            
+            TouchArea { 
+                width: 50%; 
+                clicked => { root.active-tab = 0; } 
+                Rectangle { background: root.active-tab == 0 ? #ffd70020 : #ffffff05; border-radius: 4px; border-width: 1px; border-color: root.active-tab == 0 ? #ffd700 : #ffffff10; } 
+                Text { text: " Примечание"; color: root.active-tab == 0 ? #ffd700 : white; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } 
+            }
+            TouchArea { 
+                width: 50%; 
+                clicked => { root.active-tab = 1; } 
+                Rectangle { background: root.active-tab == 1 ? #ffd70020 : #ffffff05; border-radius: 4px; border-width: 1px; border-color: root.active-tab == 1 ? #ffd700 : #ffffff10; } 
+                Text { text: " Связи ноды (Flows)"; color: root.active-tab == 1 ? #ffd700 : white; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } 
+            }
+        }
+        
+        VerticalLayout {
+            visible: root.active-tab == 0; 
+            spacing: 8px;
+            
+            Text { 
+                text: "Метаданные ноды (ID): " + root.menu-target-id; 
+                color: #ffffff60; 
+                font-size: 11px; 
+            }
+            note-field := LineEdit { 
+                text: root.properties-text; 
+                placeholder-text: "Описание сервера, порты, параметры..."; 
+                height: 36px; 
+                accepted => { root.change-note(root.menu-target-id, note-field.text); root.properties-visible = false; } 
+                init => { note-field.focus(); note-field.select-all(); } 
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+        
+        VerticalLayout {
+            visible: root.active-tab == 1; 
+            spacing: 8px;
+            
+            HorizontalLayout { 
+                Text { text: "Существующие связи нитей:"; color: #ffffff90; font-size: 12px; vertical-alignment: center; } 
+                Rectangle { horizontal-stretch: 1; } 
+                Button { text: " Связать"; clicked => { root.add-node-link(root.menu-target-id, 1); } } 
+            }
+            
+            links-list := Rectangle {
+                background: #141418; 
+                border-radius: 4px; 
+                border-width: 1px; 
+                border-color: #ffffff10;
+                height: 140px; 
+                
+                ListView {
+                    height: root.node-links-data.length * 32px;
+                    for link[link-idx] in root.node-links-data : HorizontalLayout {
+                        height: 32px; 
+                        padding: 4px; 
+                        Text { text: " " + link.target_name; color: #ffd700; vertical-alignment: center; font-size: 13px; } 
+                        Rectangle { horizontal-stretch: 1; }
+                        TouchArea { 
+                            width: 24px; 
+                            height: 24px; 
+                            clicked => { root.delete-node-link(root.menu-target-id, link.id); } 
+                            Rectangle { background: parent.has-hover ? #ff555530 : #ffffff05; border-radius: 4px; } 
+                            Text { text: " "; horizontal-alignment: center; vertical-alignment: center; font-size: 12px; } 
+                        }
+                    }
+                }
+            }
+        }
+        
+        HorizontalLayout {
+            spacing: 10px; 
+            alignment: end; 
+            height: 32px;
+            Button { text: "Сохранить изменения"; clicked => { root.change-note(root.menu-target-id, note-field.text); root.properties-visible = false; } }
+            Button { text: "Закрыть"; clicked => { root.properties-visible = false; } }
+        }
+    }
+}
+
+}
+
+}

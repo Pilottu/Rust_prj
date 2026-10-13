@@ -1,0 +1,259 @@
+#![windows_subsystem = "windows"]
+use slint::{ComponentHandle, ModelRc, VecModel, Weak};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+slint::include_modules!();
+#[link(name = "user32")]
+extern "system" {
+ fn FindWindowW(lp_c: *const u16, lp_w: *const u16) -> *mut std::ffi::c_void;
+ fn GetWindowLongW(hwnd: *mut std::ffi::c_void, n_index: i32) -> i32;
+ fn SetWindowLongW(hwnd: *mut std::ffi::c_void, n_idx: i32, dw: i32) -> i32;
+ fn ShowWindow(hwnd: *mut std::ffi::c_void, n_cmd_show: i32) -> i32;
+ fn SetWindowPos(hwnd: *mut std::ffi::c_void, hwnd_after: *mut std::ffi::c_void, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
+ fn GetAsyncKeyState(v_key: i32) -> i16;
+ fn OpenClipboard(hwnd: *mut std::ffi::c_void) -> i32;
+ fn CloseClipboard() -> i32;
+ fn EmptyClipboard() -> i32;
+ fn SetClipboardData(u_format: u32, h_mem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+ fn GetClipboardData(u_format: u32) -> *mut std::ffi::c_void;
+}
+#[link(name = "kernel32")]
+extern "system" {
+ fn GlobalAlloc(u_flags: u32, dw_bytes: usize) -> *mut std::ffi::c_void;
+ fn GlobalLock(h_mem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+ fn GlobalUnlock(h_mem: *mut std::ffi::c_void) -> i32;
+ fn GlobalFree(h_mem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+}
+const GWL_STYLE: i32 = -16;
+const WS_CAPTION: i32 = 0x00C00000;
+const WS_MAXIMIZEBOX: i32 = 0x00010000;
+const WS_MINIMIZEBOX: i32 = 0x00020000;
+const WS_THICKFRAME: i32 = 0x00040000;
+const SWP_FRAMECHANGED: u32 = 0x0020;
+const SWP_NOMOVE: u32 = 0x0002;
+const SWP_NOSIZE: u32 = 0x0001;
+const SWP_NOZORDER: u32 = 0x0004;
+const CF_UNICODETEXT: u32 = 13;
+const GMEM_MOVEABLE: u32 = 0x0002;
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+struct RawLink { id: i32, target_node_id: i32, target_node_name: String }
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+struct RawItem { id: i32, text: String, parent_id: i32, is_expanded: bool, is_editing: bool, note: String, links: Vec<RawLink> }
+#[derive(Clone, Copy)]
+struct Point2D { x: f32, y: f32 }
+fn set_clipboard_text(text: &str) {
+ unsafe {
+ if OpenClipboard(std::ptr::null_mut()) != 0 {
+ EmptyClipboard();
+ let v: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+ let h_mem = GlobalAlloc(GMEM_MOVEABLE, v.len() * 2);
+ if !h_mem.is_null() {
+ let ptr = GlobalLock(h_mem) as *mut u16; std::ptr::copy_nonoverlapping(v.as_ptr(), ptr, v.len()); GlobalUnlock(h_mem);
+ if SetClipboardData(CF_UNICODETEXT, h_mem).is_null() { GlobalFree(h_mem); }
+ }
+ CloseClipboard();
+ }
+ }
+}
+fn get_clipboard_text() -> Option<String> {
+ unsafe {
+ if OpenClipboard(std::ptr::null_mut()) != 0 {
+ let h_mem = GetClipboardData(CF_UNICODETEXT);
+ if !h_mem.is_null() {
+ let ptr = GlobalLock(h_mem) as *const u16;
+ if !ptr.is_null() {
+ let mut len = 0; while *ptr.add(len) != 0 { len += 1; }
+ let slice = std::slice::from_raw_parts(ptr, len); let res = String::from_utf16(slice).ok();
+ GlobalUnlock(h_mem); CloseClipboard(); return res;
+ }
+ GlobalUnlock(h_mem);
+ }
+ CloseClipboard();
+ }
+ }
+ None
+}
+// ИСПРАВЛЕНО: Фоновый поток больше не принимает Rc<RefCell>. Он абсолютно чист и потокобезопасен!
+fn spawn_hotkey_thread(app_weak: Weak<AppWindow>) {
+ thread::spawn(move || {
+ let mut ctrl_was_down = false; let mut z_was_down = false;
+ let mut c_was_down = false; let mut v_was_down = false;
+ loop {
+ thread::sleep(Duration::from_millis(50));
+ unsafe {
+ let ctrl_down = (GetAsyncKeyState(0x11) & -32768_i16) != 0;
+ let z_down = (GetAsyncKeyState(0x5A) & -32768_i16) != 0;
+ let c_down = (GetAsyncKeyState(0x43) & -32768_i16) != 0;
+ let v_down = (GetAsyncKeyState(0x56) & -32768_i16) != 0;
+ if ctrl_down && z_down && (!ctrl_was_down || !z_was_down) {
+ let aw = app_weak.clone(); let _ = slint::invoke_from_event_loop(move || { if let Some(app) = aw.upgrade() { app.invoke_undo_action(); } });
+ }
+ if ctrl_down && c_down && (!ctrl_was_down || !c_was_down) {
+ let aw = app_weak.clone(); let _ = slint::invoke_from_event_loop(move || { if let Some(app) = aw.upgrade() { app.invoke_copy_action(); } });
+ }
+ if ctrl_down && v_down && (!ctrl_was_down || !v_was_down) {
+ let aw = app_weak.clone(); let _ = slint::invoke_from_event_loop(move || { if let Some(app) = aw.upgrade() { app.invoke_paste_action(); } });
+ }
+ ctrl_was_down = ctrl_down; z_was_down = z_down; c_was_down = c_down; v_was_down = v_down;
+ }
+ }
+ });
+}
+fn main() -> Result<(), slint::PlatformError> {
+ let app = AppWindow::new()?;
+ app.set_scale_factor(1.0_f32);
+ slint::invoke_from_event_loop(move || {
+ let title: Vec<u16> = "Менеджер команд голосового управления\0".encode_utf16().collect();
+ unsafe {
+ let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+ if !hwnd.is_null() {
+ let cur = GetWindowLongW(hwnd, GWL_STYLE);
+ let new_st = cur | WS_CAPTION | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME;
+ SetWindowLongW(hwnd, GWL_STYLE, new_st);
+ let flags = SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER;
+ SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, flags);
+ ShowWindow(hwnd, 3);
+ }
+ }
+ }).unwrap();
+ spawn_hotkey_thread(app.as_weak());
+ let selected_id = Rc::new(RefCell::new(1_i32));
+ let all_items = Rc::new(RefCell::new(vec![RawItem { id: 1, text: "Основная локация".into(), parent_id: 0, is_expanded: true, is_editing: false, note: "Главный сервер управления".into(), links: vec![] }]));
+ let history: Rc<RefCell<Vec<Vec<RawItem>>>> = Rc::new(RefCell::new(Vec::new()));
+ let session_hover = Arc::new(Mutex::new(0_u64));
+ let save_history = {
+ let history = history.clone(); let all_items = all_items.clone();
+ move || { let current_state = all_items.borrow().clone(); history.borrow_mut().push(current_state); }
+ };
+ let update_view = {
+ let app_weak = app.as_weak(); let all_items = all_items.clone(); let selected_id = selected_id.clone();
+ move || {
+ if let Some(app) = app_weak.upgrade() {
+ let db = all_items.borrow(); let mut visible_items = Vec::new(); let sel_id = *selected_id.borrow();
+ fn build_tree(pid: i32, depth: i32, db: &Vec<RawItem>, v_items: &mut Vec<MyTreeItem>, hidden: bool, parent_lasts: Vec<bool>, sel_id: i32, parent_coord: Point2D, global_index: &mut i32) {
+ let mut children: Vec<&RawItem> = db.iter().filter(|i| i.parent_id == pid).collect();
+ children.sort_by_key(|i| i.id); let total_children = children.len();
+ for (index, item) in children.into_iter().enumerate() {
+ let is_last = index == total_children - 1; let has_children = db.iter().any(|i| i.parent_id == item.id);
+ let row_height = 32.0_f32; let padding_top = 8.0_f32; let padding_left = 8.0_f32;
+ let current_row_idx = *global_index; if !hidden { *global_index += 1; }
+ let self_x = padding_left + 10.0 + (depth as f32 * 24.0) + 10.0;
+ let self_y = padding_top + (current_row_idx as f32 * row_height) + 16.0;
+ let current_node_coord = Point2D { x: self_x, y: self_y };
+ if !hidden {
+ let text_len = item.text.chars().count() as f32; let computed_w = (text_len * 7.2) + 20.0;
+ let last_flag = if is_last { "L" } else { "M" };
+ let smart_id = format!("{}_{}_{}_{}_{}", item.parent_id, item.id, depth, last_flag, item.links.len());
+ let mut slint_mask = [0; 6];
+ for i in 0..6 { if i < (depth - 1) as usize && i < parent_lasts.len() { slint_mask[i] = if !parent_lasts[i] { 1 } else { 0 }; } }
+ v_items.push(MyTreeItem {
+ id: item.id, text: item.text.clone().into(), depth, is_last, has_children, is_editing: item.is_editing, is_expanded: item.is_expanded,
+ parent_is_last: if depth > 1 && ((depth - 2) as usize) < parent_lasts.len() { parent_lasts[(depth - 2) as usize] } else { false },
+ is_selected: item.id == sel_id, note: item.note.clone().into(), text_width: computed_w, smart_id: smart_id.into(), line_mask: Rc::new(VecModel::from(slint_mask.to_vec())).into(), parent_id: item.parent_id, parent_triangle_x: parent_coord.x, parent_triangle_y: parent_coord.y, self_triangle_x: current_node_coord.x, self_triangle_y: current_node_coord.y,
+ });
+ }
+ if has_children {
+ let mut current_lasts = parent_lasts.clone(); current_lasts.push(is_last);
+ build_tree(item.id, depth + 1, db, v_items, hidden || !item.is_expanded, current_lasts, sel_id, current_node_coord, global_index);
+ }
+ }
+ }
+ let mut global_item_counter = 0; let root_anchor = Point2D { x: 20.0, y: 24.0 };
+ build_tree(0, 0, &db, &mut visible_items, false, vec![], sel_id, root_anchor, &mut global_item_counter);
+ let mut max_width = 250.0_f32;
+ for item in &visible_items { let item_width = 10.0 + (item.depth as f32 * 24.0) + 20.0 + item.text_width + 40.0; max_width = max_width.max(item_width); }
+ app.set_tree_width(max_width.into()); app.set_tree_data(ModelRc::from(Rc::new(VecModel::from(visible_items))));
+ }
+ }
+ };
+ let update_view_clone = update_view.clone(); let all_items_toggle = all_items.clone();
+ app.on_toggle_expand(move |id| {
+ let mut db = all_items_toggle.borrow_mut(); if let Some(item) = db.iter_mut().find(|i| i.id == id) { item.is_expanded = !item.is_expanded; }
+ drop(db); update_view_clone();
+ });
+ let selected_id_clone = selected_id.clone(); let update_view_clone3 = update_view.clone();
+ app.on_select_item(move |id, _text| { *selected_id_clone.borrow_mut() = id; update_view_clone3(); });
+ let app_weak_menu = app.as_weak();
+ app.on_show_menu(move |id, x, y| { if let Some(app) = app_weak_menu.upgrade() { app.set_menu_target_id(id); app.set_menu_x(x); app.set_menu_y(y); app.set_menu_visible(true); } });
+ let app_weak_hover = app.as_weak(); let all_items_hover = all_items.clone(); let session_hover_clone = session_hover.clone();
+ app.on_hover_item(move |id, index, _x, _y| {
+ if let Some(app) = app_weak_hover.upgrade() {
+ let current_session = { let mut lock = session_hover_clone.lock().unwrap(); *lock += 1; *lock };
+ if id == -1 { 
+ let local_weak = app_weak_hover.clone(); let _ = slint::invoke_from_event_loop(move || { if let Some(a) = local_weak.upgrade() { a.set_debug_timer(4.0_f32); a.set_tooltip_visible(false); a.set_tooltip_index(-1); } });
+ return; 
+ }
+ let db = all_items_hover.borrow();
+ if let Some(item) = db.iter().find(|i| i.id == id) {
+ let display_note = if item.note.is_empty() { "Примечание отсутствует. Нажмите 'Свойства', чтобы добавить его.".to_string() } else { item.note.clone() };
+ app.set_tooltip_text(display_note.into()); app.set_tooltip_index(index);
+ let app_weak_timer = app_weak_hover.clone(); let session_timer = session_hover_clone.clone();
+ thread::spawn(move || {
+ thread::sleep(Duration::from_millis(4000));
+ if *session_timer.lock().unwrap() == current_session {
+ let local_weak_show = app_weak_timer.clone(); let _ = slint::invoke_from_event_loop(move || { if let Some(a) = local_weak_show.upgrade() { a.set_tooltip_visible(true); } });
+ }
+ });
+ }
+ }
+ });
+ let app_weak_action = app.as_weak(); let all_items_action = all_items.clone(); let save_history_action = save_history.clone(); let update_view_action = update_view.clone(); let selected_id_action = selected_id.clone();
+ app.on_menu_action(move |action_type, target_id| {
+ if let Some(app) = app_weak_action.upgrade() {
+ app.set_menu_visible(false);
+ if action_type == "properties" {
+ let db = all_items_action.borrow(); if let Some(item) = db.iter().find(|i| i.id == target_id) { app.set_properties_text(item.note.clone().into()); app.set_properties_visible(true); }
+ } else if action_type == "add" {
+ save_history_action(); let mut db = all_items_action.borrow_mut(); if let Some(parent) = db.iter_mut().find(|i| i.id == target_id) { parent.is_expanded = true; }
+ let new_id = db.iter().map(|i| i.id).max().unwrap_or(0) + 1;
+ db.push(RawItem { id: new_id, text: format!("Новая локация {}", new_id), parent_id: target_id, is_expanded: true, is_editing: true, note: "".into(), links: vec![] });
+ *selected_id_action.borrow_mut() = new_id; drop(db); update_view_action();
+ } else if action_type == "delete" {
+ save_history_action(); let mut db = all_items_action.borrow_mut();
+ fn delete_recursive(pid: i32, vec: &mut Vec<RawItem>) {
+ let sub_ids: Vec<i32> = vec.iter().filter(|i| i.parent_id == pid).map(|i| i.id).collect();
+ for sid in sub_ids { delete_recursive(sid, vec); }
+ vec.retain(|i| i.id != pid);
+ }
+ if target_id != 1 { delete_recursive(target_id, &mut db); }
+ drop(db); update_view_action();
+ }
+ }
+ });
+ let all_items_start_rename = all_items.clone(); let update_view_start = update_view.clone();
+ app.on_start_rename(move |id| {
+ let mut db = all_items_start_rename.borrow_mut(); if let Some(item) = db.iter_mut().find(|i| i.id == id) { item.is_editing = true; }
+ drop(db); update_view_start();
+ });
+ let all_items_rename = all_items.clone(); let update_view_rename = update_view.clone();
+ app.on_finish_rename(move |id, new_text| {
+ let mut db = all_items_rename.borrow_mut(); if let Some(item) = db.iter_mut().find(|i| i.id == id) { item.text = new_text.to_string(); item.is_editing = false; }
+ drop(db); update_view_rename();
+ });
+ // ВНЕДРЕНО: Вызов копирования текста ноды в буфер обмена по Ctrl+C внутри UI-потока
+ let all_items_copy = all_items.clone(); let selected_id_copy = selected_id.clone();
+ app.on_copy_action(move || {
+ let db = all_items_copy.borrow(); let sel = *selected_id_copy.borrow();
+ if let Some(item) = db.iter().find(|i| i.id == sel) { set_clipboard_text(&item.text); }
+ });
+ // ВНЕДРЕНО: Вызов вставки текста из буфера обмена по Ctrl+V внутри UI-потока
+ let all_items_paste = all_items.clone(); let selected_id_paste = selected_id.clone(); let save_history_paste = save_history.clone(); let update_view_paste = update_view.clone();
+ app.on_paste_action(move || {
+ if let Some(clip_text) = get_clipboard_text() {
+ save_history_paste(); let mut db = all_items_paste.borrow_mut(); let sel = *selected_id_paste.borrow();
+ if let Some(item) = db.iter_mut().find(|i| i.id == sel) { if !item.is_editing { item.text = clip_text; } }
+ drop(db); update_view_paste();
+ }
+ });
+ let all_items_note = all_items.clone();
+ app.on_change_note(move |id, new_note| { let mut db = all_items_note.borrow_mut(); if let Some(item) = db.iter_mut().find(|i| i.id == id) { item.note = new_note.to_string(); } });
+ let update_view_clone2 = update_view.clone();
+ app.on_undo_action(move || { if let Some(prev_state) = history.borrow_mut().pop() { *all_items.borrow_mut() = prev_state; update_view_clone2(); } });
+ update_view();
+ app.run()
+}
