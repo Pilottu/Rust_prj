@@ -96,7 +96,7 @@ pub fn get_clipboard_text() -> Option<String> {
 pub fn fix_window_chrome(app_weak: Weak<AppWindow>) {
     slint::invoke_from_event_loop(move || {
         if let Some(_ui) = app_weak.upgrade() {
-            let title: Vec<u16> = "Smart wood (CAD Space)\0"
+            let title: Vec<u16> = "Менеджер команд голосового управления (CAD Среда)\0"
                 .encode_utf16()
                 .collect();
             unsafe {
@@ -128,7 +128,7 @@ pub fn fix_window_chrome(app_weak: Weak<AppWindow>) {
 pub fn spawn_hotkey_thread(app_weak: Weak<AppWindow>) {
     thread::spawn(move || {
         let (mut c_w, mut z_w, mut cc_w, mut v_w) = (false, false, false, false);
-        let title: Vec<u16> = "Smart wood (CAD Space)\0"
+        let title: Vec<u16> = "Менеджер команд голосового управления (CAD Среда)\0"
             .encode_utf16()
             .collect();
         let mut hw: *mut std::ffi::c_void = std::ptr::null_mut();
