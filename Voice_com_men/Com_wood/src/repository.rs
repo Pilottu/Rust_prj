@@ -24,7 +24,7 @@ impl Default for SqlServerConfig {
     fn default() -> Self {
         Self {
             server: r"localhost\TEW_SQLEXPRESS".to_string(),
-            database: "cad_state".to_string(),
+            database: "vcm_state".to_string(),
             driver: "ODBC Driver 17 for SQL Server".to_string(),
             trusted_connection: true,
         }
@@ -588,11 +588,15 @@ pub fn load_initial_state() -> AppState {
             return Ok(Some(state));
         }
 
-        if let Some(state) = load_legacy_state(&project_root().join("cad_state.db"))? {
+        let legacy_state_path = project_root().join(format!("{}.db", config().database));
+        if let Some(state) = load_legacy_state(&legacy_state_path)? {
             save_state(&connection, &state)?;
             crate::historian::log(
                 "INFO",
-                "Состояние перенесено из cad_state.db в SQL Server Express",
+                &format!(
+                    "Состояние перенесено из {} в SQL Server Express",
+                    legacy_state_path.display()
+                ),
             );
             return Ok(Some(state));
         }
