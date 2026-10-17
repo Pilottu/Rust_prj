@@ -1,5 +1,5 @@
 use std::{cell::RefCell, rc::Rc};
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::state::{AppState, CADLink, CADTree, ClipboardBranch, RawItem, RawLink};
 use crate::tree_ops::{
@@ -14,6 +14,35 @@ use crate::AppWindow;
 // Одна функция — wire_callbacks — просто подписывается на каждый app.on_xxx(...),
 // логика внутри каждого обработчика не менялась при переносе из main.rs, только
 // сам код стал доступен через use выше вместо того, чтобы жить в одном файле.
+
+// Выход всех узлов из режима редактирования. Если в поле ввода успели что-то
+// набрать (pending_edit) — правка сохраняется (с записью в историю для отмены),
+// как при нажатии Enter.
+fn stop_editing(st: &mut AppState) {
+    if let Some((node_id, tree_id, txt)) = st.pending_edit.take() {
+        let changed = st
+            .trees
+            .iter()
+            .find(|t| t.id == tree_id)
+            .and_then(|t| t.items.iter().find(|i| i.id == node_id))
+            .map(|i| i.text != txt)
+            .unwrap_or(false);
+        if changed {
+            let history_snapshot = (st.trees.clone(), st.cad_links.clone());
+            st.history.push(history_snapshot);
+            if let Some(t) = st.trees.iter_mut().find(|t| t.id == tree_id) {
+                if let Some(i) = t.items.iter_mut().find(|i| i.id == node_id) {
+                    i.text = txt;
+                }
+            }
+        }
+    }
+    for t in st.trees.iter_mut() {
+        for i in t.items.iter_mut() {
+            i.is_editing = false;
+        }
+    }
+}
 
 pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     let app_weak = app.as_weak();
@@ -97,41 +126,50 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     let _a_w = app_weak.clone();
     app.on_fit_view(move |win_w, win_h| {
         let ui = _a_w.unwrap();
-        let st = _s.borrow();
 
-        if st.trees.is_empty() {
-            return;
-        }
+        // Реальные размеры деревьев берём из UI-модели: ширина (по самому
+        // длинному тексту) и число видимых строк считаются в update_ui_models.
+        // В state.trees эти поля устаревшие (width=250, count=начальный),
+        // из-за них по X всё считалось неправильно.
+        let trees = ui.get_trees_list();
 
         let mut min_x = f32::MAX;
         let mut max_x = f32::MIN;
         let mut min_y = f32::MAX;
         let mut max_y = f32::MIN;
-        for t in &st.trees {
+        for t in trees.iter() {
             let h = (t.count as f32) * 32.0 + 36.0;
             min_x = min_x.min(t.cad_x);
             max_x = max_x.max(t.cad_x + t.width);
             min_y = min_y.min(t.cad_y);
             max_y = max_y.max(t.cad_y + h);
         }
+        if min_x == f32::MAX {
+            return; // деревьев нет
+        }
 
         let content_w = (max_x - min_x).max(1.0);
         let content_h = (max_y - min_y).max(1.0);
-        let center_x = (min_x + max_x) / 2.0;
-        let center_y = (min_y + max_y) / 2.0;
 
-        // Небольшой отступ по краям, чтобы деревья не упирались прямо в
-        // границу окна.
-        let margin = 60.0_f32;
-        let avail_w = (win_w - margin * 2.0).max(50.0);
-        let avail_h = (win_h - margin * 2.0).max(50.0);
-        let scale = (avail_w / content_w).min(avail_h / content_h).clamp(0.2, 2.5);
+        // Поля: сверху кнопка «Добавить основной узел», снизу «Выровнять вид».
+        let margin_x = 50.0_f32;
+        let margin_top = 70.0_f32;
+        let margin_bottom = 70.0_f32;
+        let avail_w = (win_w - margin_x * 2.0).max(50.0);
+        let avail_h = (win_h - margin_top - margin_bottom).max(50.0);
+
+        // Один масштаб на обе оси — берём меньший, чтобы влезло и по X, и по Y.
+        let scale = (avail_w / content_w).min(avail_h / content_h).clamp(0.1, 2.5);
+
+        // Центрируем содержимое в доступной области.
+        let off_x = margin_x + (avail_w - content_w * scale) / 2.0 - min_x * scale;
+        let off_y = margin_top + (avail_h - content_h * scale) / 2.0 - min_y * scale;
 
         ui.set_scale_factor(scale);
-        ui.set_bg_offset_x(win_w / 2.0 - center_x * scale);
-        ui.set_bg_offset_y(win_h / 2.0 - center_y * scale);
+        ui.set_bg_offset_x(off_x);
+        ui.set_bg_offset_y(off_y);
 
-        update_ui_models(&ui, &st);
+        update_ui_models(&ui, &_s.borrow());
     });
     let _s = state.clone();
     let _a_w = app_weak.clone();
@@ -252,9 +290,12 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
         let ui = _a_w.unwrap();
         let mut st = _s.borrow_mut();
         st.active_focus_tree_id = tree_id;
+        stop_editing(&mut st);
         st.selected_node_id = node_id;
         st.selected_trees.clear();
         st.selected_nodes.clear();
+        st.selected_links.clear();
+        ui.set_selected_link_id(-1);
 
         if let Some(t) = st.trees.iter().find(|t| t.id == tree_id) {
             if let Some(_i) = t.items.iter().find(|i| i.id == node_id) {
@@ -323,9 +364,19 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     });
     let _s = state.clone();
     let _a_w = app_weak.clone();
+    app.on_edit_text_changed(move |node_id, txt, tree_id| {
+        // Только запоминаем набранный текст — интерфейс не перестраиваем,
+        // иначе поле ввода пересоздалось бы прямо во время набора.
+        _s.borrow_mut().pending_edit = Some((node_id, tree_id, txt.to_string()));
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
     app.on_item_double_clicked(move |node_id, tree_id| {
         let ui = _a_w.unwrap();
         let mut st = _s.borrow_mut();
+        // Сначала закрываем редактирование везде (в том числе в других
+        // деревьях), потом включаем его на нужном узле.
+        stop_editing(&mut st);
         if let Some(t) = st.trees.iter_mut().find(|t| t.id == tree_id) {
             for i in t.items.iter_mut() {
                 i.is_editing = i.id == node_id;
@@ -338,6 +389,7 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     app.on_finish_rename(move |node_id, txt, tree_id| {
         let ui = _a_w.unwrap();
         let mut st = _s.borrow_mut();
+        st.pending_edit = None;
         let changed = st
             .trees
             .iter()
@@ -884,6 +936,7 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
         st.history.push(history_snapshot);
 
         st.cad_links.retain(|l| l.id != link_id);
+        st.selected_links.retain(|id| *id != link_id);
         for t in st.trees.iter_mut() {
             for it in t.items.iter_mut() {
                 it.links.retain(|l| l.id != link_id);
@@ -939,6 +992,8 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     app.on_toggle_tree_select(move |tree_id| {
         let ui = _a_w.unwrap();
         let mut st = _s.borrow_mut();
+        stop_editing(&mut st);
+        st.selected_links.clear();
         // Обычный клик по кружку (без Ctrl) уже вызывает start_drag и не
         // трогает выбор напрямую — сюда попадает только явный Ctrl+клик:
         // если дерево уже выбрано — снимаем выбор, иначе добавляем к
@@ -957,6 +1012,8 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     app.on_select_single_tree(move |tree_id| {
         let ui = _a_w.unwrap();
         let mut st = _s.borrow_mut();
+        stop_editing(&mut st);
+        st.selected_links.clear();
         // Обычный (без Ctrl) клик по кружку — заменяет весь выбор одним этим деревом.
         st.selected_trees = vec![tree_id];
         st.selected_node_id = -1;
@@ -968,8 +1025,16 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     app.on_clear_tree_selection(move || {
         let ui = _a_w.unwrap();
         let mut st = _s.borrow_mut();
-        if !st.selected_trees.is_empty() || !st.selected_nodes.is_empty() || st.selected_node_id != -1
+        let was_editing = st.pending_edit.is_some()
+            || st.trees.iter().any(|t| t.items.iter().any(|i| i.is_editing));
+        if was_editing
+            || !st.selected_trees.is_empty()
+            || !st.selected_nodes.is_empty()
+            || !st.selected_links.is_empty()
+            || st.selected_node_id != -1
         {
+            stop_editing(&mut st);
+            st.selected_links.clear();
             st.selected_trees.clear();
             st.selected_nodes.clear();
             st.selected_node_id = -1;
@@ -981,6 +1046,8 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
     app.on_toggle_node_select(move |node_id, tree_id| {
         let ui = _a_w.unwrap();
         let mut st = _s.borrow_mut();
+        stop_editing(&mut st);
+        st.selected_links.clear();
         st.active_focus_tree_id = tree_id;
         // Если до этого был обычный одиночный выбор (не через Ctrl) — он
         // должен влиться в множественный, а не потеряться при первом же
@@ -1129,19 +1196,68 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
         let ui = _a_w.unwrap();
         let mut st = _s.borrow_mut();
 
-        let selected_id = ui.get_selected_link_id();
-        if selected_id != -1 {
+        // Удаляем все выбранные связи (Ctrl+клик позволяет выбрать несколько).
+        let ids: Vec<i32> = st
+            .cad_links
+            .iter()
+            .map(|l| l.id)
+            .filter(|id| st.selected_links.contains(id))
+            .collect();
+        if !ids.is_empty() {
             let history_snapshot = (st.trees.clone(), st.cad_links.clone());
             st.history.push(history_snapshot);
-            st.cad_links.retain(|l| l.id != selected_id);
+            st.cad_links.retain(|l| !ids.contains(&l.id));
             for t in st.trees.iter_mut() {
                 for it in t.items.iter_mut() {
-                    it.links.retain(|l| l.id != selected_id);
+                    it.links.retain(|l| !ids.contains(&l.id));
                 }
             }
-            ui.set_selected_link_id(-1);
-            update_ui_models(&ui, &st);
+            crate::historian::log("INFO", &format!("Удалено связей: {}", ids.len()));
         }
+        st.selected_links.clear();
+        ui.set_selected_link_id(-1);
+        update_ui_models(&ui, &st);
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_select_link(move |link_id| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+        // Обычный клик: выбор заменяется одной этой связью.
+        stop_editing(&mut st);
+        st.selected_links = vec![link_id];
+        st.selected_trees.clear();
+        st.selected_nodes.clear();
+        st.selected_node_id = -1;
+        update_ui_models(&ui, &st);
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_select_link_from_properties(move |link_id| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+        // Выбор связи из окна свойств: подсвечиваем её на холсте, но выбор
+        // узла не трогаем — иначе список связей в открытом окне опустел бы
+        // (он строится по выбранному узлу).
+        st.selected_links = vec![link_id];
+        update_ui_models(&ui, &st);
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_toggle_link_select(move |link_id| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+        // Ctrl+клик: добавить связь к выбору или снять с неё выбор.
+        stop_editing(&mut st);
+        if let Some(pos) = st.selected_links.iter().position(|&id| id == link_id) {
+            st.selected_links.remove(pos);
+        } else {
+            st.selected_links.push(link_id);
+        }
+        st.selected_trees.clear();
+        st.selected_nodes.clear();
+        st.selected_node_id = -1;
+        update_ui_models(&ui, &st);
     });
     let _s = state.clone();
     let _a_w = app_weak.clone();
@@ -1156,6 +1272,7 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
             let link_id = link_info.id;
 
             st.cad_links.retain(|l| l.id != link_id);
+            st.selected_links.retain(|id| *id != link_id);
             for t in st.trees.iter_mut() {
                 for it in t.items.iter_mut() {
                     it.links.retain(|l| l.id != link_id);

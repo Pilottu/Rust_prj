@@ -81,6 +81,7 @@ export component AppWindow inherits Window {
     // выбрано, для условий видимости/подтверждения.
     in_out property <int> selected_tree_count: 0;
     in_out property <int> selected_node_count: 0;
+    in_out property <int> selected_link_count: 0;
     property <bool> delete_confirm_visible: false;
     in_out property <bool> note_editing: false;
     in_out property <string> note_edit_text: "";
@@ -115,6 +116,10 @@ export component AppWindow inherits Window {
     callback delete_link(int);
     callback delete_link_from_properties(int);
     callback delete_selected_link();
+    callback select_link(int);
+    callback select_link_from_properties(int);
+    callback toggle_link_select(int);
+    callback edit_text_changed(int, string, int);
     callback delete_selected_node();
     callback delete_note_from_properties(int);
     callback add_note_to_properties(int, string);
@@ -173,7 +178,7 @@ export component AppWindow inherits Window {
                 return accept;
             }
             if (event.text == Key.Delete) {
-                if (root.selected_link_id != -1) {
+                if (root.selected_link_count > 0) {
                     root.delete_selected_link();
                 } else if (root.selected_tree_count > 0 || root.selected_node_id != -1 || root.selected_node_count > 0) {
                     root.delete_confirm_visible = true;
@@ -192,7 +197,7 @@ export component AppWindow inherits Window {
         scroll-event(evt) => {
             if (!root.is_dragging_middle && root.active_dragging_tree_id == -1) {
                 let old_scale = root.scale_factor;
-                let new_scale = evt.delta-y > 0 ? Math.max(0.4, old_scale - 0.05) : Math.min(2.5, old_scale + 0.05);
+                let new_scale = evt.delta-y > 0 ? Math.max(0.1, old_scale - 0.05) : Math.min(2.5, old_scale + 0.05);
                 if (new_scale != old_scale) {
                     let cad_mouse_x = (self.mouse-x - root.bg_offset_x) / (1px * old_scale);
                     let cad_mouse_y = (self.mouse-y - root.bg_offset_y) / (1px * old_scale);
@@ -328,10 +333,19 @@ export component AppWindow inherits Window {
             linking_target_node_id: root.linking_target_node_id;
             linking_target_tree_id: root.linking_target_tree_id;
             link_confirm_visible: root.link_confirm_visible;
-            link_clicked(id) => { root.selected_link_id = id; }
+            link_clicked(id, ctrl) => {
+                root.selected_link_id = id;
+                if (ctrl) {
+                    root.toggle_link_select(id);
+                } else {
+                    root.select_link(id);
+                }
+                global_keys.focus();
+            }
             link_context_menu(id, screen_x, screen_y, id_obj1, id_obj2, side1) => {
                 root.menu_visible = false;
                 root.selected_link_id = id;
+                root.select_link(id);
                 root.link_menu_id = id;
                 root.link_menu_left_id = side1 == 0 ? id_obj1 : id_obj2;
                 root.link_menu_right_id = side1 == 0 ? id_obj2 : id_obj1;
@@ -344,6 +358,7 @@ export component AppWindow inherits Window {
                     root.item_double_clicked(id, tree_id);
                 } else {
                     root.select_item(id, text, tree_id);
+                    global_keys.focus();
                 }
                 root.last_click_time = animation-tick();
                 root.last_clicked_item_id = id;
@@ -354,11 +369,16 @@ export component AppWindow inherits Window {
                 root.tree_drag_anchor_y = anchor_y;
                 root.active_dragging_tree_id = id;
             }
-            select_single_tree(id) => { root.select_single_tree(id); }
-            toggle_tree_select(id) => { root.toggle_tree_select(id); }
-            toggle_node_select(id, tree_id) => { root.toggle_node_select(id, tree_id); }
-            show_menu(id, tree_id, menu_x, menu_y) => { root.show_tree_menu(id, tree_id, menu_x, menu_y); }
+            select_single_tree(id) => { root.select_single_tree(id); global_keys.focus(); }
+            toggle_tree_select(id) => { root.toggle_tree_select(id); global_keys.focus(); }
+            toggle_node_select(id, tree_id) => { root.toggle_node_select(id, tree_id); global_keys.focus(); }
+            show_menu(id, tree_id, screen_x, screen_y) => {
+                // screen_x/screen_y — координаты курсора в окне; menu_x/menu_y храним в
+                // координатах холста (как и раньше), меню ниже переводит их обратно.
+                root.show_tree_menu(id, tree_id, (screen_x - root.bg_offset_x / 1px) / root.scale_factor, (screen_y - root.bg_offset_y / 1px) / root.scale_factor);
+            }
             finish_rename(id, value, tree_id) => { root.finish_rename(id, value, tree_id); }
+            edit_text_changed(id, value, tree_id) => { root.edit_text_changed(id, value, tree_id); }
             hover_item(id, index, tree_id, self_x, self_y, tree_cad_x, tree_cad_y) => {
                 if (root.tooltip_index != id) {
                     root.tooltip_index = id;
@@ -434,8 +454,15 @@ export component AppWindow inherits Window {
     }
 
     if (root.menu_visible) : NodeMenu {
-        x: root.menu_x * 1px * root.scale_factor + root.bg_offset_x;
-        y: root.menu_y * 1px * root.scale_factor + root.bg_offset_y;
+        // Позиция курсора в окне.
+        property <length> cursor_x: root.menu_x * 1px * root.scale_factor + root.bg_offset_x;
+        property <length> cursor_y: root.menu_y * 1px * root.scale_factor + root.bg_offset_y;
+        // Нижний край меню — на 10px выше курсора. Если сверху не хватает места,
+        // меню открывается под курсором. По X не выходит за границы окна.
+        x: Math.max(0px, Math.min(root.width - self.width, self.cursor_x));
+        y: self.cursor_y - self.height - 10px >= 0px
+            ? self.cursor_y - self.height - 10px
+            : Math.max(0px, Math.min(root.height - self.height, self.cursor_y + 10px));
         add_node() => {
             root.menu_visible = false;
             root.menu_action("add", root.menu_target_id, root.menu_source_tree);
@@ -545,6 +572,10 @@ export component AppWindow inherits Window {
             }
         }
         delete_link_from_properties(idx) => { root.delete_link_from_properties(idx); }
+        link_selected(id) => {
+            root.selected_link_id = id;
+            root.select_link_from_properties(id);
+        }
     }
 
     if (root.is_linking_mode && root.link_confirm_visible) : LinkConfirmDialog {

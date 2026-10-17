@@ -80,6 +80,12 @@ pub struct AppState {
     // тоже чисто UI-состояние. id узлов глобально уникальны (счётчик один
     // на все деревья), поэтому tree_id хранить не нужно.
     pub selected_nodes: Vec<i32>,
+    // Множественный выбор связей (Ctrl+клик по линии) — тоже чисто UI-состояние.
+    pub selected_links: Vec<i32>,
+    // Текст узла, который сейчас правится (node_id, tree_id, текст). Поле ввода
+    // живёт в Slint, поэтому текст копируется сюда по мере набора — чтобы при
+    // клике на другой узел правку можно было сохранить, а не потерять.
+    pub pending_edit: Option<(i32, i32, String)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -103,6 +109,8 @@ impl PersistedAppState {
             linking_source_tree_id: -1,
             selected_trees: Vec::new(),
             selected_nodes: Vec::new(),
+            selected_links: Vec::new(),
+            pending_edit: None,
         }
     }
 }
@@ -136,6 +144,8 @@ impl Default for AppState {
             linking_source_tree_id: -1,
             selected_trees: Vec::new(),
             selected_nodes: Vec::new(),
+            selected_links: Vec::new(),
+            pending_edit: None,
         }
     }
 }

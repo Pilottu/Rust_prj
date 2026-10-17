@@ -24,7 +24,7 @@ export component CADWorkspace inherits Rectangle {
     // выбор дерева (is_selected) теперь приходит прямо в модели из Rust
 
     // связи
-    callback link_clicked(int);
+    callback link_clicked(int, bool);
     // id, screen_x, screen_y, id_obj1, id_obj2, side1 — всё, что нужно
     // родителю, чтобы построить контекстное меню связи (см. app.slint)
     callback link_context_menu(int, float, float, int, int, int);
@@ -35,6 +35,7 @@ export component CADWorkspace inherits Rectangle {
     callback start_drag(int, float, float);
     callback show_menu(int, int, float, float);
         callback finish_rename(int, string, int);
+    callback edit_text_changed(int, string, int);
     // id, index, tree_id, self_x, self_y, tree_cad_x, tree_cad_y — координаты нужны
     // app.slint, чтобы правильно позиционировать всплывающую подсказку.
     callback hover_item(int, int, int, float, float, float, float);
@@ -58,7 +59,7 @@ export component CADWorkspace inherits Rectangle {
         line: link;
         scale_factor: root.scale_factor;
         selected_link_id: root.selected_link_id;
-        clicked(id) => { root.link_clicked(id); }
+        clicked(id, ctrl) => { root.link_clicked(id, ctrl); }
         context_menu(id, screen_x, screen_y) => {
             root.link_context_menu(id, screen_x, screen_y, link.id_obj1, link.id_obj2, link.side1);
         }
@@ -84,6 +85,7 @@ export component CADWorkspace inherits Rectangle {
         start_drag(id, anchor_x, anchor_y) => { root.start_drag(id, anchor_x, anchor_y); }
         show_menu(id, tree_id, menu_x, menu_y) => { root.show_menu(id, tree_id, menu_x, menu_y); }
                 finish_rename(id, value, tree_id) => { root.finish_rename(id, value, tree_id); }
+        edit_text_changed(id, value, tree_id) => { root.edit_text_changed(id, value, tree_id); }
         hover_item(id, index, tree_id, self_x, self_y, tree_cad_x, tree_cad_y) => { root.hover_item(id, index, tree_id, self_x, self_y, tree_cad_x, tree_cad_y); }
         hover_tree(tree_id, self_x, self_y, tree_cad_x, tree_cad_y) => { root.hover_tree(tree_id, self_x, self_y, tree_cad_x, tree_cad_y); }
         select_single_tree(id) => { root.select_single_tree(id); }

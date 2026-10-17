@@ -270,9 +270,20 @@ pub fn update_ui_models(app: &AppWindow, state: &AppState) {
     app.set_trees_list(ModelRc::from(Rc::new(VecModel::from(slint_trees))));
     app.set_selected_tree_count(state.selected_trees.len() as i32);
     app.set_selected_node_count(state.selected_nodes.len() as i32);
+    app.set_selected_link_count(
+        state
+            .cad_links
+            .iter()
+            .filter(|l| state.selected_links.contains(&l.id))
+            .count() as i32,
+    );
 
     let mut updated_links = Vec::new();
+    // Для каждой связи: куда сместилась вертикаль при обходе чужого дерева
+    // (-1 — влево от него, +1 — вправо, 0 — не смещалась). Нужно для разнесения.
+    let mut snap_dirs: Vec<f32> = Vec::new();
     for link in &state.cad_links {
+        let mut snap_dir = 0.0_f32;
         let mut x1 = link.x1;
         let mut y1 = link.y1;
         let mut x2 = link.x2;
@@ -347,8 +358,10 @@ pub fn update_ui_models(app: &AppWindow, state: &AppState) {
                         let dist_to_left = (mid_x - box_left).abs();
                         let dist_to_right = (box_right - mid_x).abs();
                         mid_x = if dist_to_left < dist_to_right {
+                            snap_dir = -1.0;
                             box_left - margin
                         } else {
+                            snap_dir = 1.0;
                             box_right + margin
                         };
                     }
@@ -369,7 +382,51 @@ pub fn update_ui_models(app: &AppWindow, state: &AppState) {
             side1,
             side2,
             mid_x,
+            is_selected: state.selected_links.contains(&link.id),
         });
+        snap_dirs.push(snap_dir);
+    }
+
+    // Разносим вертикальные сегменты связей, чтобы они не сливались в одну
+    // линию. Идём по связям в порядке ID (результат стабилен), и каждой ищем
+    // ближайший свободный "коридор": сдвиг от рассчитанной позиции кратен
+    // LANE_STEP (0, +5, -5, +10, -10 ...; у обошедших дерево — только наружу).
+    // Коридор занят, если у уже размещённой связи вертикаль пересекается по Y
+    // и стоит ближе MIN_GAP по X. Связи, далеко разнесённые по Y, не мешают
+    // друг другу и остаются на своих местах.
+    const LANE_STEP: f32 = 5.0;
+    const MIN_GAP: f32 = 4.0;
+    let mut order: Vec<usize> = (0..updated_links.len()).collect();
+    order.sort_by_key(|&i| updated_links[i].id);
+    // (y_low, y_high, итоговый mid_x) уже размещённых связей
+    let mut placed: Vec<(f32, f32, f32)> = Vec::new();
+    for &i in &order {
+        let (y_lo, y_hi) = {
+            let l = &updated_links[i];
+            (l.y1.min(l.y2), l.y1.max(l.y2))
+        };
+        let base = updated_links[i].mid_x;
+        let dir = snap_dirs[i];
+        let mut chosen = base;
+        for lane in 0..40 {
+            let offset = if dir != 0.0 {
+                dir * lane as f32 * LANE_STEP
+            } else {
+                // 0, +1, -1, +2, -2 ...
+                let k = ((lane + 1) / 2) as f32;
+                if lane % 2 == 1 { k * LANE_STEP } else { -k * LANE_STEP }
+            };
+            let candidate = base + offset;
+            let busy = placed.iter().any(|&(p_lo, p_hi, p_x)| {
+                p_lo <= y_hi + 2.0 && y_lo <= p_hi + 2.0 && (p_x - candidate).abs() < MIN_GAP
+            });
+            if !busy {
+                chosen = candidate;
+                break;
+            }
+        }
+        updated_links[i].mid_x = chosen;
+        placed.push((y_lo, y_hi, chosen));
     }
     app.set_active_cad_links(ModelRc::from(Rc::new(VecModel::from(updated_links))));
 
