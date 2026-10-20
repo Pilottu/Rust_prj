@@ -5,17 +5,21 @@ use slint::ComponentHandle;
 
 slint::include_modules!();
 
-mod state;
+mod command_classifier;
+mod historian;
 mod repository;
+mod state;
 mod tree_ops;
 mod ui_bridge;
 mod win_native;
-mod historian;
 
 fn main() {
     let app = AppWindow::new().unwrap();
 
-    let state = Rc::new(RefCell::new(state::load_initial_state()));
+    let mut initial_state = state::load_initial_state();
+    command_classifier::classify_state(&mut initial_state);
+    repository::save_persisted_state(&initial_state);
+    let state = Rc::new(RefCell::new(initial_state));
     tree_ops::update_ui_models(&app, &state.borrow());
 
     ui_bridge::wire_callbacks(&app, &state);

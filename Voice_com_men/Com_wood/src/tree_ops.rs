@@ -1,5 +1,5 @@
-use std::{collections::HashMap, rc::Rc};
 use slint::{ModelRc, VecModel};
+use std::{collections::HashMap, rc::Rc};
 
 use crate::state::{AppState, CADTree, ClipboardBranch, Point2D, RawItem};
 use crate::{AppWindow, CADLine, MyTreeItem, NodeLinkInfo, NodeNoteInfo, SlintCADTree};
@@ -435,6 +435,25 @@ pub fn update_ui_models(app: &AppWindow, state: &AppState) {
 
     let notes_vec = build_node_notes(state, state.active_focus_tree_id, state.selected_node_id);
     app.set_properties_notes(ModelRc::from(Rc::new(VecModel::from(notes_vec))));
+
+    let command_marked = state
+        .trees
+        .iter()
+        .find(|tree| tree.id == state.active_focus_tree_id)
+        .and_then(|tree| {
+            tree.items
+                .iter()
+                .find(|item| item.id == state.selected_node_id)
+        })
+        .is_some_and(|item| item.is_command);
+    app.set_properties_command_marked(command_marked);
+    let command_phrase_exists = state
+        .trees
+        .iter()
+        .find(|tree| tree.id == state.active_focus_tree_id)
+        .and_then(|tree| tree.items.iter().find(|item| item.id == state.selected_node_id))
+        .is_some_and(|item| crate::command_classifier::has_command_phrase(&item.text));
+    app.set_properties_command_phrase_exists(command_phrase_exists);
 
     app.set_selected_node_id(state.selected_node_id);
     app.set_selected_tree_id(state.active_focus_tree_id);

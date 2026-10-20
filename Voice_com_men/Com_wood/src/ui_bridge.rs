@@ -1,6 +1,9 @@
-use std::{cell::RefCell, rc::Rc};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
+use std::{cell::RefCell, rc::Rc};
 
+use crate::command_classifier::{
+    add_command_phrase, classify_state, has_command_phrase, remove_command_phrase,
+};
 use crate::state::{AppState, CADLink, CADTree, ClipboardBranch, RawItem, RawLink};
 use crate::tree_ops::{
     build_node_links, build_node_notes, build_tree_notes, find_closest_free_pos, pack_branch,
@@ -42,6 +45,7 @@ fn stop_editing(st: &mut AppState) {
             i.is_editing = false;
         }
     }
+    classify_state(st);
 }
 
 pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
@@ -115,6 +119,8 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                 parent_id: 0,
                 is_expanded: true,
                 is_editing: false,
+                is_command: false,
+                is_command_manual: false,
                 notes: vec![],
                 links: vec![],
             }],
@@ -226,6 +232,9 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
         if st.trees.iter().any(|t| t.id == tree_id) {
             ui.set_properties_text("".into());
             ui.set_properties_visible(true);
+            ui.set_properties_command_marked(false);
+            ui.set_properties_command_debug_visible(false);
+            ui.set_properties_command_phrase_exists(false);
             ui.set_selected_property_link_index(-1);
             ui.set_selected_property_note_index(-1);
             ui.set_note_editing(false);
@@ -358,6 +367,7 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
             }
         }
 
+        classify_state(&mut st);
         ui.set_note_editing(false);
         ui.set_selected_property_note_index(-1);
         update_ui_models(&ui, &st);
@@ -397,9 +407,31 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
             .and_then(|t| t.items.iter().find(|i| i.id == node_id))
             .map(|i| i.text != txt.as_str())
             .unwrap_or(false);
+        let old_command_phrase = changed
+            .then(|| {
+                st.trees
+                    .iter()
+                    .find(|tree| tree.id == tree_id)
+                    .and_then(|tree| tree.items.iter().find(|item| item.id == node_id))
+                    .filter(|item| item.is_command_manual && item.is_command)
+                    .map(|item| item.text.clone())
+            })
+            .flatten();
         if changed {
             let history_snapshot = (st.trees.clone(), st.cad_links.clone());
             st.history.push(history_snapshot);
+        }
+        if let Some(old_phrase) = old_command_phrase {
+            match crate::repository::rename_command_word(&old_phrase, &txt) {
+                Ok(_) => {
+                    remove_command_phrase(&old_phrase);
+                    add_command_phrase(&txt);
+                }
+                Err(error) => crate::historian::log(
+                    "ERROR",
+                    &format!("Не удалось переименовать команду '{old_phrase}' в SQL: {error}"),
+                ),
+            }
         }
         if let Some(t) = st.trees.iter_mut().find(|t| t.id == tree_id) {
             if let Some(i) = t.items.iter_mut().find(|i| i.id == node_id) {
@@ -407,9 +439,11 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                 i.is_editing = false;
             }
         }
+        classify_state(&mut st);
         update_ui_models(&ui, &st);
     });
     let _s = state.clone();
+    let _a_w = app_weak.clone();
     app.on_change_note(move |node_id, note, tree_id| {
         let mut st = _s.borrow_mut();
         if let Some(t) = st.trees.iter_mut().find(|t| t.id == tree_id) {
@@ -421,6 +455,8 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                 }
             }
         }
+        classify_state(&mut st);
+        update_ui_models(&_a_w.unwrap(), &st);
     });
     let _s = state.clone();
     let _a_w = app_weak.clone();
@@ -454,6 +490,8 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                         parent_id: n_id,
                         is_expanded: true,
                         is_editing: true,
+                        is_command: false,
+                        is_command_manual: false,
                         notes: vec![],
                         links: vec![],
                     });
@@ -489,6 +527,9 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                         ui.set_selected_property_note_index(-1);
                         ui.set_selected_node_id(n_id);
                         ui.set_selected_tree_id(tree_id);
+                        ui.set_properties_command_marked(_i.is_command);
+                        ui.set_properties_command_debug_visible(true);
+                        ui.set_properties_command_phrase_exists(has_command_phrase(&_i.text));
                         ui.set_note_editing(false);
                         let links = build_node_links(&st, tree_id, n_id);
                         let notes = build_node_notes(&st, tree_id, n_id);
@@ -508,6 +549,7 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                 }
             }
         }
+        classify_state(&mut st);
         update_ui_models(&ui, &st);
     });
     let _s = state.clone();
@@ -637,6 +679,7 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                     if last_new_id != -1 {
                         st.active_focus_tree_id = last_new_id;
                     }
+                    classify_state(&mut st);
                     crate::historian::log("INFO", &format!("Вставлено деревьев из буфера: {}", pasted_count));
                     update_ui_models(&_a_w.unwrap(), &st);
                 } else {
@@ -663,6 +706,7 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                             p.is_expanded = true;
                         }
                     }
+                    classify_state(&mut st);
                     crate::historian::log("INFO", &format!("Вставлено узлов (веток) из буфера: {}", pasted_count));
                     update_ui_models(&_a_w.unwrap(), &st);
                 } else {
@@ -717,6 +761,7 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                     tree.cad_y += 60.0;
                     st.trees.push(tree);
                     st.active_focus_tree_id = next_id;
+                    classify_state(&mut st);
                     crate::historian::log("INFO", &format!("Вставлено дерево из буфера (id={})", next_id));
                     update_ui_models(&_a_w.unwrap(), &st);
                 } else {
@@ -757,11 +802,13 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                             p.is_expanded = true;
                         }
                     }
+                    classify_state(&mut st);
                     crate::historian::log("INFO", "Вставлена ветка узла из буфера");
                 } else {
                     crate::historian::log("WARN", "Не удалось разобрать буфер обмена (ветка узла)");
                 }
             }
+            classify_state(&mut st);
             update_ui_models(&_a_w.unwrap(), &st);
         }
     });
@@ -1290,16 +1337,100 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
         let mut st = _s.borrow_mut();
 
         let tree_id = st.active_focus_tree_id;
+        let mut note_added = false;
         if let Some(tree) = st.trees.iter_mut().find(|t| t.id == tree_id) {
             if let Some(item) = tree.items.iter_mut().find(|i| i.id == node_id) {
                 let trimmed = note_text.trim();
                 if !trimmed.is_empty() {
                     item.notes.push(trimmed.to_string());
-                    update_ui_models(&ui, &st);
-                    ui.set_properties_text("".into());
-                    ui.set_selected_property_note_index(-1);
+                    note_added = true;
                 }
             }
+        }
+        if note_added {
+            classify_state(&mut st);
+            update_ui_models(&ui, &st);
+            ui.set_properties_text("".into());
+            ui.set_selected_property_note_index(-1);
+        }
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_set_command_flag(move |node_id, tree_id, checked| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+        let command = st
+            .trees
+            .iter()
+            .find(|tree| tree.id == tree_id)
+            .and_then(|tree| {
+                tree.items
+                    .iter()
+                    .find(|item| item.id == node_id)
+                    .map(|item| item.text.clone())
+            });
+        let Some(phrase) = command else {
+            return;
+        };
+
+        if checked {
+            if let Err(error) = crate::repository::add_command_word(&phrase, "general") {
+                ui.set_properties_command_marked(false);
+                return crate::historian::log(
+                    "ERROR",
+                    &format!("Не удалось добавить команду '{phrase}' в SQL: {error}"),
+                );
+            }
+            add_command_phrase(&phrase);
+            ui.set_properties_command_phrase_exists(true);
+        }
+        if let Some(item) = st
+            .trees
+            .iter_mut()
+            .find(|tree| tree.id == tree_id)
+            .and_then(|tree| tree.items.iter_mut().find(|item| item.id == node_id))
+        {
+            item.is_command = checked;
+            item.is_command_manual = true;
+        }
+        classify_state(&mut st);
+        update_ui_models(&ui, &st);
+    });
+    let _s = state.clone();
+    let _a_w = app_weak.clone();
+    app.on_remove_command_word(move |node_id, tree_id| {
+        let ui = _a_w.unwrap();
+        let mut st = _s.borrow_mut();
+        let phrase = st
+            .trees
+            .iter()
+            .find(|tree| tree.id == tree_id)
+            .and_then(|tree| tree.items.iter().find(|item| item.id == node_id))
+            .map(|item| item.text.clone());
+        let Some(phrase) = phrase else {
+            return;
+        };
+
+        match crate::repository::remove_command_word(&phrase) {
+            Ok(_) => {
+                remove_command_phrase(&phrase);
+                ui.set_properties_command_phrase_exists(false);
+                if let Some(item) = st
+                    .trees
+                    .iter_mut()
+                    .find(|tree| tree.id == tree_id)
+                    .and_then(|tree| tree.items.iter_mut().find(|item| item.id == node_id))
+                {
+                    item.is_command = false;
+                    item.is_command_manual = true;
+                }
+                classify_state(&mut st);
+                update_ui_models(&ui, &st);
+            }
+            Err(error) => crate::historian::log(
+                "ERROR",
+                &format!("Не удалось удалить команду '{phrase}' из SQL: {error}"),
+            ),
         }
     });
     let _s = state.clone();
@@ -1316,16 +1447,21 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
         let tree_id = st.active_focus_tree_id;
         let node_id = st.selected_node_id;
 
+        let mut note_deleted = false;
         if let Some(tree) = st.trees.iter_mut().find(|t| t.id == tree_id) {
             if let Some(item) = tree.items.iter_mut().find(|i| i.id == node_id) {
                 if property_note_index >= 0 && (property_note_index as usize) < item.notes.len() {
                     item.notes.remove(property_note_index as usize);
-                    update_ui_models(&ui, &st);
-                    ui.set_selected_property_note_index(-1);
-                    ui.set_properties_text("".into());
-                    ui.set_note_editing(false);
+                    note_deleted = true;
                 }
             }
+        }
+        if note_deleted {
+            classify_state(&mut st);
+            update_ui_models(&ui, &st);
+            ui.set_selected_property_note_index(-1);
+            ui.set_properties_text("".into());
+            ui.set_note_editing(false);
         }
     });
     let _s = state.clone();

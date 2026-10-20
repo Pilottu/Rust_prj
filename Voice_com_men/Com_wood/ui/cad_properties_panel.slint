@@ -10,6 +10,9 @@ export component NodePropertiesPanel inherits Rectangle {
     in property <[NodeNoteInfo]> notes;
     in property <[NodeLinkInfo]> links;
     in property <int> selected_node_id;
+    in-out property <bool> command_marked;
+    in property <bool> show_command_debug;
+    in property <bool> command_phrase_exists;
     in property <float> scale_factor: 1.0;
 
     in-out property <int> selected_note_index: -1;
@@ -33,6 +36,8 @@ export component NodePropertiesPanel inherits Rectangle {
     callback delete_link_from_properties(int);
     // клик по связи в списке: родитель подсвечивает её на холсте
     callback link_selected(int);
+    callback command_flag_changed(int, bool);
+    callback remove_command_word(int);
 
     width: 100%;
     height: 100%;
@@ -114,6 +119,44 @@ export component NodePropertiesPanel inherits Rectangle {
             if (root.active_tab == 0) : VerticalLayout {
                 spacing: 8px;
                 height: 250px;
+                if (root.show_command_debug) : HorizontalLayout {
+                    spacing: 8px;
+                    height: 24px;
+                    TouchArea {
+                        width: 18px;
+                        height: 18px;
+                        clicked => {
+                            root.command_marked = !root.command_marked;
+                            root.command_flag_changed(root.selected_node_id, root.command_marked);
+                        }
+                        Rectangle {
+                            x: 1px;
+                            y: 1px;
+                            width: 16px;
+                            height: 16px;
+                            background: root.command_marked ? white : #18181f;
+                            border-width: 2px;
+                            border-color: white;
+                            border-radius: 2px;
+                            if (root.command_marked) : Text {
+                                text: "✓";
+                                color: #18181f;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Команда";
+                        color: white;
+                        vertical-alignment: center;
+                    }
+                    if (root.command_phrase_exists) : Button {
+                        text: "Удалить из словаря";
+                        clicked => { root.remove_command_word(root.selected_node_id); }
+                    }
+                }
                 if (root.notes.length == 0) : Text {
                     text: "Нет примечаний у этого узла.";
                     color: #ffffff60;

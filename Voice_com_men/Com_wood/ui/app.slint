@@ -22,6 +22,9 @@ export component AppWindow inherits Window {
     in_out property <string> properties_text: "";
     in_out property <[NodeLinkInfo]> properties_links: [];
     in_out property <[NodeNoteInfo]> properties_notes: [];
+    in_out property <bool> properties_command_marked: false;
+    in_out property <bool> properties_command_debug_visible: false;
+    in_out property <bool> properties_command_phrase_exists: false;
     in_out property <string> tooltip_text: "";
     in_out property <int> tooltip_index: -1;
     // Отдельная "заметка дерева" (не узла) — всплывает при наведении на
@@ -127,6 +130,8 @@ export component AppWindow inherits Window {
     callback select_note_from_properties(int);
     callback note_double_clicked(int);
     callback note_edit_finished(int, string);
+    callback set_command_flag(int, int, bool);
+    callback remove_command_word(int, int);
     callback show_tree_menu(int, int, float, float);
     callback select_link_target(int, int, float, float, float, float);
     callback delete_tree(int);
@@ -527,6 +532,9 @@ export component AppWindow inherits Window {
 
     if (root.properties_visible) : NodePropertiesPanel {
         notes: root.properties_notes;
+        command_marked <=> root.properties_command_marked;
+        show_command_debug: root.properties_command_debug_visible;
+        command_phrase_exists: root.properties_command_phrase_exists;
         links: root.properties_links;
         selected_node_id: root.selected_node_id;
         scale_factor: root.scale_factor;
@@ -572,6 +580,8 @@ export component AppWindow inherits Window {
             }
         }
         delete_link_from_properties(idx) => { root.delete_link_from_properties(idx); }
+        command_flag_changed(id, checked) => { root.set_command_flag(id, root.selected_tree_id, checked); }
+        remove_command_word(id) => { root.remove_command_word(id, root.selected_tree_id); }
         link_selected(id) => {
             root.selected_link_id = id;
             root.select_link_from_properties(id);

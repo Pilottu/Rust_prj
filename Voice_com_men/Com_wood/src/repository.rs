@@ -174,8 +174,24 @@ IF OBJECT_ID(N'dbo.CadNodes', N'U') IS NULL
         NodeText NVARCHAR(MAX) NOT NULL,
         ParentNodeId INT NOT NULL,
         IsExpanded BIT NOT NULL,
-        IsEditing BIT NOT NULL
+        IsEditing BIT NOT NULL,
+        IsCommand BIT NOT NULL CONSTRAINT DF_CadNodes_IsCommand DEFAULT (0),
+        IsCommandManual BIT NOT NULL CONSTRAINT DF_CadNodes_IsCommandManual DEFAULT (0)
     );
+IF COL_LENGTH(N'dbo.CadNodes', N'IsCommand') IS NULL
+    ALTER TABLE dbo.CadNodes ADD IsCommand BIT NOT NULL
+        CONSTRAINT DF_CadNodes_IsCommand DEFAULT (0) WITH VALUES;
+IF COL_LENGTH(N'dbo.CadNodes', N'IsCommandManual') IS NULL
+    ALTER TABLE dbo.CadNodes ADD IsCommandManual BIT NOT NULL
+        CONSTRAINT DF_CadNodes_IsCommandManual DEFAULT (0) WITH VALUES;
+IF OBJECT_ID(N'dbo.CommandWords', N'U') IS NULL
+    CREATE TABLE dbo.CommandWords (
+        Word NVARCHAR(100) NOT NULL PRIMARY KEY,
+        Topic NVARCHAR(32) NOT NULL CONSTRAINT DF_CommandWords_Topic DEFAULT (N'general')
+    );
+IF COL_LENGTH(N'dbo.CommandWords', N'Topic') IS NULL
+    ALTER TABLE dbo.CommandWords ADD Topic NVARCHAR(32) NOT NULL
+        CONSTRAINT DF_CommandWords_Topic DEFAULT (N'general') WITH VALUES;
 IF OBJECT_ID(N'dbo.TreeNotes', N'U') IS NULL
     CREATE TABLE dbo.TreeNotes (
         TreeId INT NOT NULL REFERENCES dbo.CadTrees(TreeId),
@@ -217,6 +233,78 @@ IF OBJECT_ID(N'dbo.CadLinks', N'U') IS NULL
 "#,
     )?;
     Ok(())
+}
+
+pub fn add_command_word(word: &str, topic: &str) -> Result<bool, Box<dyn Error>> {
+    let Some(connection) = CONNECTION.get() else {
+        return Err("SQL command dictionary connection is not initialized".into());
+    };
+    let word_parameter = bind_text(word);
+    let topic_parameter = bind_text(topic);
+    let connection = connection
+        .lock()
+        .map_err(|_| "SQL connection lock poisoned")?;
+    let mut cursor = connection
+        .execute(
+            "SET NOCOUNT ON; IF NOT EXISTS (SELECT 1 FROM dbo.CommandWords WHERE Word = ?) BEGIN INSERT INTO dbo.CommandWords (Word, Topic) VALUES (?, ?); SELECT CAST(1 AS INT); END ELSE SELECT CAST(0 AS INT)",
+            (&word_parameter, &word_parameter, &topic_parameter),
+        )?
+        .ok_or("SQL Server did not return the dictionary insert result")?;
+    let mut row = cursor
+        .next_row()?
+        .ok_or("SQL Server returned no dictionary insert result")?;
+    Ok(read_i32(&mut row, 1)? != 0)
+}
+
+pub fn rename_command_word(old_word: &str, new_word: &str) -> Result<bool, Box<dyn Error>> {
+    let Some(connection) = CONNECTION.get() else {
+        return Err("SQL command dictionary connection is not initialized".into());
+    };
+    let old_parameter = bind_text(old_word);
+    let new_parameter = bind_text(new_word);
+    let connection = connection
+        .lock()
+        .map_err(|_| "SQL connection lock poisoned")?;
+    let mut cursor = connection
+        .execute(
+            "SET NOCOUNT ON; IF ? <> ? AND EXISTS (SELECT 1 FROM dbo.CommandWords WHERE Word = ?) BEGIN IF EXISTS (SELECT 1 FROM dbo.CommandWords WHERE Word = ?) DELETE FROM dbo.CommandWords WHERE Word = ? ELSE UPDATE dbo.CommandWords SET Word = ? WHERE Word = ?; SELECT CAST(1 AS INT); END ELSE SELECT CAST(0 AS INT)",
+            (&old_parameter, &new_parameter, &old_parameter, &new_parameter, &old_parameter, &new_parameter, &old_parameter),
+        )?
+        .ok_or("SQL Server did not return the dictionary rename result")?;
+    let mut row = cursor
+        .next_row()?
+        .ok_or("SQL Server returned no dictionary rename result")?;
+    Ok(read_i32(&mut row, 1)? != 0)
+}
+
+pub fn remove_command_word(word: &str) -> Result<bool, Box<dyn Error>> {
+    let Some(connection) = CONNECTION.get() else {
+        return Err("SQL command dictionary connection is not initialized".into());
+    };
+    let word_parameter = bind_text(word);
+    let connection = connection
+        .lock()
+        .map_err(|_| "SQL connection lock poisoned")?;
+    let mut cursor = connection
+        .execute(
+            "SET NOCOUNT ON; IF EXISTS (SELECT 1 FROM dbo.CommandWords WHERE Word = ?) BEGIN DELETE FROM dbo.CommandWords WHERE Word = ?; SELECT CAST(1 AS INT); END ELSE SELECT CAST(0 AS INT)",
+            (&word_parameter, &word_parameter),
+        )?
+        .ok_or("SQL Server did not return the dictionary delete result")?;
+    let mut row = cursor
+        .next_row()?
+        .ok_or("SQL Server returned no dictionary delete result")?;
+    Ok(read_i32(&mut row, 1)? != 0)
+}
+
+fn load_command_dictionary(connection: &Connection<'_>) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut words = Vec::new();
+    if let Some(mut cursor) = connection.execute("SELECT Word FROM dbo.CommandWords", ())? {
+        while let Some(mut row) = cursor.next_row()? {
+            words.push(read_string(&mut row, 1)?);
+        }
+    }
+    Ok(words)
 }
 
 fn read_i32(row: &mut odbc_api::CursorRow<'_>, column: u16) -> Result<i32, Box<dyn Error>> {
@@ -272,7 +360,7 @@ fn read_state(connection: &Connection<'_>) -> Result<Option<PersistedAppState>, 
 
     let mut node_indexes = HashMap::new();
     if let Some(mut cursor) = connection.execute(
-        "SELECT NodeId, TreeId, NodeText, ParentNodeId, IsExpanded, IsEditing FROM dbo.CadNodes ORDER BY TreeId, NodeOrder",
+        "SELECT NodeId, TreeId, NodeText, ParentNodeId, IsExpanded, IsEditing, IsCommand, IsCommandManual FROM dbo.CadNodes ORDER BY TreeId, NodeOrder",
         (),
     )? {
         while let Some(mut row) = cursor.next_row()? {
@@ -288,6 +376,8 @@ fn read_state(connection: &Connection<'_>) -> Result<Option<PersistedAppState>, 
                 parent_id: read_i32(&mut row, 4)?,
                 is_expanded: read_bool(&mut row, 5)?,
                 is_editing: read_bool(&mut row, 6)?,
+                is_command: read_bool(&mut row, 7)?,
+                is_command_manual: read_bool(&mut row, 8)?,
                 notes: Vec::new(),
                 links: Vec::new(),
             });
@@ -407,9 +497,10 @@ fn save_state(
                 let text = bind_text(&item.text);
                 let is_expanded = i32::from(item.is_expanded);
                 let is_editing = i32::from(item.is_editing);
+                let is_command_manual = i32::from(item.is_command_manual);
                 connection.execute(
-                    "INSERT INTO dbo.CadNodes (NodeId, TreeId, NodeOrder, NodeText, ParentNodeId, IsExpanded, IsEditing) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (&item.id, &tree.id, &(order as i32), &text, &item.parent_id, &is_expanded, &is_editing),
+                    "INSERT INTO dbo.CadNodes (NodeId, TreeId, NodeOrder, NodeText, ParentNodeId, IsExpanded, IsEditing, IsCommand, IsCommandManual) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (&item.id, &tree.id, &(order as i32), &text, &item.parent_id, &is_expanded, &is_editing, &i32::from(item.is_command), &is_command_manual),
                 )?;
             }
         }
@@ -577,6 +668,7 @@ pub fn load_initial_state() -> AppState {
         ensure_database()?;
         let connection = connect(&config().database)?;
         ensure_schema(&connection)?;
+        crate::command_classifier::initialize_dictionary(load_command_dictionary(&connection)?);
 
         if let Err(error) =
             migrate_legacy_history(&connection, &project_root().join("historian.db"))

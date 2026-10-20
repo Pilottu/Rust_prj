@@ -16,6 +16,10 @@ pub struct RawItem {
     pub parent_id: i32,
     pub is_expanded: bool,
     pub is_editing: bool,
+    #[serde(default)]
+    pub is_command: bool,
+    #[serde(default)]
+    pub is_command_manual: bool,
     pub notes: Vec<String>,
     pub links: Vec<RawLink>,
 }
@@ -130,6 +134,8 @@ impl Default for AppState {
                     parent_id: 0,
                     is_expanded: true,
                     is_editing: false,
+                    is_command: false,
+                    is_command_manual: false,
                     notes: vec!["Главный server управления".to_string()],
                     links: vec![],
                 }],
