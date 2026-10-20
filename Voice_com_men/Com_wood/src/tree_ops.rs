@@ -414,7 +414,11 @@ pub fn update_ui_models(app: &AppWindow, state: &AppState) {
             } else {
                 // 0, +1, -1, +2, -2 ...
                 let k = ((lane + 1) / 2) as f32;
-                if lane % 2 == 1 { k * LANE_STEP } else { -k * LANE_STEP }
+                if lane % 2 == 1 {
+                    k * LANE_STEP
+                } else {
+                    -k * LANE_STEP
+                }
             };
             let candidate = base + offset;
             let busy = placed.iter().any(|&(p_lo, p_hi, p_x)| {
@@ -451,7 +455,11 @@ pub fn update_ui_models(app: &AppWindow, state: &AppState) {
         .trees
         .iter()
         .find(|tree| tree.id == state.active_focus_tree_id)
-        .and_then(|tree| tree.items.iter().find(|item| item.id == state.selected_node_id))
+        .and_then(|tree| {
+            tree.items
+                .iter()
+                .find(|item| item.id == state.selected_node_id)
+        })
         .is_some_and(|item| crate::command_classifier::has_command_phrase(&item.text));
     app.set_properties_command_phrase_exists(command_phrase_exists);
 

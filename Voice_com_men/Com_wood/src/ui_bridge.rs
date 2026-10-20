@@ -7,8 +7,7 @@ use crate::command_classifier::{
 use crate::state::{AppState, CADLink, CADTree, ClipboardBranch, RawItem, RawLink};
 use crate::tree_ops::{
     build_node_links, build_node_notes, build_tree_notes, find_closest_free_pos, pack_branch,
-    unpack_branch,
-    update_ui_models,
+    unpack_branch, update_ui_models,
 };
 use crate::win_native::{get_clipboard_text, set_clipboard_text};
 use crate::AppWindow;
@@ -165,7 +164,9 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
         let avail_h = (win_h - margin_top - margin_bottom).max(50.0);
 
         // Один масштаб на обе оси — берём меньший, чтобы влезло и по X, и по Y.
-        let scale = (avail_w / content_w).min(avail_h / content_h).clamp(0.1, 2.5);
+        let scale = (avail_w / content_w)
+            .min(avail_h / content_h)
+            .clamp(0.1, 2.5);
 
         // Центрируем содержимое в доступной области.
         let off_x = margin_x + (avail_w - content_w * scale) / 2.0 - min_x * scale;
@@ -545,7 +546,8 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                 .retain(|l| !removed_ids.contains(&l.id_obj1) && !removed_ids.contains(&l.id_obj2));
             for t2 in st.trees.iter_mut() {
                 for it in t2.items.iter_mut() {
-                    it.links.retain(|l| !removed_ids.contains(&l.target_node_id));
+                    it.links
+                        .retain(|l| !removed_ids.contains(&l.target_node_id));
                 }
             }
         }
@@ -680,10 +682,16 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                         st.active_focus_tree_id = last_new_id;
                     }
                     classify_state(&mut st);
-                    crate::historian::log("INFO", &format!("Вставлено деревьев из буфера: {}", pasted_count));
+                    crate::historian::log(
+                        "INFO",
+                        &format!("Вставлено деревьев из буфера: {}", pasted_count),
+                    );
                     update_ui_models(&_a_w.unwrap(), &st);
                 } else {
-                    crate::historian::log("WARN", "Не удалось разобрать буфер обмена (несколько деревьев)");
+                    crate::historian::log(
+                        "WARN",
+                        "Не удалось разобрать буфер обмена (несколько деревьев)",
+                    );
                 }
                 return;
             }
@@ -707,10 +715,16 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                         }
                     }
                     classify_state(&mut st);
-                    crate::historian::log("INFO", &format!("Вставлено узлов (веток) из буфера: {}", pasted_count));
+                    crate::historian::log(
+                        "INFO",
+                        &format!("Вставлено узлов (веток) из буфера: {}", pasted_count),
+                    );
                     update_ui_models(&_a_w.unwrap(), &st);
                 } else {
-                    crate::historian::log("WARN", "Не удалось разобрать буфер обмена (несколько узлов)");
+                    crate::historian::log(
+                        "WARN",
+                        "Не удалось разобрать буфер обмена (несколько узлов)",
+                    );
                 }
                 return;
             }
@@ -762,7 +776,10 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                     st.trees.push(tree);
                     st.active_focus_tree_id = next_id;
                     classify_state(&mut st);
-                    crate::historian::log("INFO", &format!("Вставлено дерево из буфера (id={})", next_id));
+                    crate::historian::log(
+                        "INFO",
+                        &format!("Вставлено дерево из буфера (id={})", next_id),
+                    );
                     update_ui_models(&_a_w.unwrap(), &st);
                 } else {
                     crate::historian::log("WARN", "Не удалось разобрать буфер обмена (дерево)");
@@ -1073,7 +1090,10 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
         let ui = _a_w.unwrap();
         let mut st = _s.borrow_mut();
         let was_editing = st.pending_edit.is_some()
-            || st.trees.iter().any(|t| t.items.iter().any(|i| i.is_editing));
+            || st
+                .trees
+                .iter()
+                .any(|t| t.items.iter().any(|i| i.is_editing));
         if was_editing
             || !st.selected_trees.is_empty()
             || !st.selected_nodes.is_empty()
@@ -1122,7 +1142,10 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
         if ids_to_delete.is_empty() {
             return;
         }
-        crate::historian::log("INFO", &format!("Удалено деревьев целиком: {}", ids_to_delete.len()));
+        crate::historian::log(
+            "INFO",
+            &format!("Удалено деревьев целиком: {}", ids_to_delete.len()),
+        );
 
         let history_snapshot = (st.trees.clone(), st.cad_links.clone());
         st.history.push(history_snapshot);
@@ -1130,7 +1153,9 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
         let removed_link_ids: Vec<i32> = st
             .cad_links
             .iter()
-            .filter(|l| ids_to_delete.contains(&l.tree_id_1) || ids_to_delete.contains(&l.tree_id_2))
+            .filter(|l| {
+                ids_to_delete.contains(&l.tree_id_1) || ids_to_delete.contains(&l.tree_id_2)
+            })
             .map(|l| l.id)
             .collect();
 
@@ -1192,7 +1217,10 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                 .filter(|id| *id % 1000 != 0) // корневые узлы так не удаляются
                 .collect();
             for id in ids {
-                if let Some(t) = st.trees.iter_mut().find(|t| t.items.iter().any(|i| i.id == id))
+                if let Some(t) = st
+                    .trees
+                    .iter_mut()
+                    .find(|t| t.items.iter().any(|i| i.id == id))
                 {
                     del(id, &mut t.items, &mut removed_ids);
                 }
@@ -1205,11 +1233,15 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                 });
                 for t2 in st.trees.iter_mut() {
                     for it in t2.items.iter_mut() {
-                        it.links.retain(|l| !removed_ids.contains(&l.target_node_id));
+                        it.links
+                            .retain(|l| !removed_ids.contains(&l.target_node_id));
                     }
                 }
             }
-            crate::historian::log("INFO", &format!("Удалено узлов (с дочерними): {}", removed_ids.len()));
+            crate::historian::log(
+                "INFO",
+                &format!("Удалено узлов (с дочерними): {}", removed_ids.len()),
+            );
             update_ui_models(&ui, &st);
             return;
         }
@@ -1229,11 +1261,15 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                 });
                 for t2 in st.trees.iter_mut() {
                     for it in t2.items.iter_mut() {
-                        it.links.retain(|l| !removed_ids.contains(&l.target_node_id));
+                        it.links
+                            .retain(|l| !removed_ids.contains(&l.target_node_id));
                     }
                 }
             }
-            crate::historian::log("INFO", &format!("Удалено узлов (с дочерними): {}", removed_ids.len()));
+            crate::historian::log(
+                "INFO",
+                &format!("Удалено узлов (с дочерними): {}", removed_ids.len()),
+            );
             update_ui_models(&ui, &st);
         }
     });
