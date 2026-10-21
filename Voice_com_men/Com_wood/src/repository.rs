@@ -233,8 +233,11 @@ IF OBJECT_ID(N'dbo.CadLinks', N'U') IS NULL
     );
 IF OBJECT_ID(N'dbo.CommandPool', N'U') IS NULL
     CREATE TABLE dbo.CommandPool (
-        Vozmozhnie NVARCHAR(MAX) NOT NULL
+        Vozmozhnie NVARCHAR(MAX) NOT NULL,
+        Rang BIT NOT NULL DEFAULT 0
     );
+IF COL_LENGTH(N'dbo.CommandPool', N'Rang') IS NULL
+    ALTER TABLE dbo.CommandPool ADD Rang BIT NOT NULL DEFAULT 0;
 "#,
     )?;
     Ok(())
@@ -667,7 +670,7 @@ fn save_command_pool(
         execute(connection, "DELETE FROM dbo.CommandPool;")?;
         let json = bind_text(phrases_json);
         connection.execute(
-            "INSERT INTO dbo.CommandPool (Vozmozhnie) SELECT [value] FROM OPENJSON(?) ORDER BY CAST([key] AS INT)",
+            "INSERT INTO dbo.CommandPool (Vozmozhnie, Rang) SELECT Vozmozhnie, Rang FROM OPENJSON(?) WITH (Vozmozhnie NVARCHAR(MAX) '$.v', Rang BIT '$.r')",
             (&json,),
         )?;
         Ok(())
@@ -686,9 +689,9 @@ fn save_command_pool(
 }
 
 fn sync_command_pool(connection: &Connection<'_>, trees: &[CADTree], links: &[CADLink]) {
-    let phrases: Vec<String> = crate::command_pool::build_pool(trees, links)
+    let phrases: Vec<serde_json::Value> = crate::command_pool::build_pool(trees, links)
         .into_iter()
-        .map(|variant| variant.text)
+        .map(|variant| serde_json::json!({ "v": variant.text, "r": u8::from(variant.has_synonym) }))
         .collect();
     let Ok(json) = serde_json::to_string(&phrases) else {
         return;

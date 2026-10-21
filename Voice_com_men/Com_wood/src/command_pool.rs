@@ -1,20 +1,29 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::state::{CADLink, CADTree, RawItem};
 
 // Пул возможных голосовых команд.
 //
 // Для каждого узла, помеченного как команда (is_command), идём по связям
-// (cad_links) и собираем ВСЕ максимальные цепочки узлов:
-//   Включить -> Люстра -> Мансарда спальня
-// Текст узлов цепочки, склеенный через пробел, — первичная команда (id "N_0").
-// Вторичные команды (id "N_1", "N_2", ...) — те же цепочки, где у любого узла
+// (cad_links) и собираем ВСЕ полные команды. Связи бывают и между деревьями,
+// и внутри одного дерева (Телевизор — Громкость, Сделай — 0-100).
+//   Сделай -> Громкость -> Телевизор -> Второй этаж зал; Сделай -> 0-100
+//   даёт одну команду: «Сделай Громкость Телевизор Второй этаж зал 0-100»
+// Текст узлов, склеенный через пробел, — первичная команда (id "N_0").
+// Вторичные команды (id "N_1", "N_2", ...) — те же слова, где у любого узла
 // текст заменён на одно из его примечаний (синоним). Перебираются все
 // комбинации, поэтому пул растёт как произведение числа вариантов у узлов.
 //
-// Правила обхода (чтобы цепочки не расползались):
-//   * по одному узлу из каждого дерева — цепочка идёт «дерево -> дерево»;
-//   * другие узлы-команды в цепочку не попадают;
+// Правила обхода:
+//   * узлы одного дерева, связанные с текущим узлом, — «альтернативы»:
+//     в команду попадает один из них (Люстра ИЛИ Бра ИЛИ Подсветка);
+//   * связи в РАЗНЫЕ деревья дополняют друг друга: из каждого дерева берётся
+//     по одному узлу, порядок — по возрастанию id дерева, а связь внутри
+//     собственного дерева узла (кодовое слово 0-100) идёт после них;
+//   * в чужое дерево, уже представленное в команде, возвращаться нельзя;
+//   * чужие узлы-команды в команду не попадают (Люстра -> Выключить);
+//   * командой считается узел без родителя-команды, а предки-команды
+//     стартового узла (0-100 унаследовал метку от Сделай) в цепочку не идут;
 //   * узел-команда без связей команды не даёт.
 //
 // Одинаковые тексты внутри одного дерева (две «спальня» на разных этажах)
@@ -25,6 +34,9 @@ use crate::state::{CADLink, CADTree, RawItem};
 /// Верхняя граница числа вариантов (первичная + синонимы) на одну цепочку.
 const MAX_VARIANTS_PER_CHAIN: usize = 500;
 
+/// Верхняя граница числа различных «скелетов» команды от одного узла-команды.
+const MAX_STRUCTURES_PER_COMMAND: usize = 2000;
+
 /// Ключ узла: (id дерева, id узла).
 type Key = (i32, i32);
 
@@ -33,6 +45,9 @@ pub struct CommandVariant {
     /// "1_0" — первичная, "1_1", "1_2", ... — синонимы.
     pub id: String,
     pub text: String,
+    /// true — в команде есть синоним (примечание) хотя бы у одного узла;
+    /// false — команда целиком из названий узлов. Пишется в колонку Rang (BIT).
+    pub has_synonym: bool,
 }
 
 struct TreeIndex<'a> {
@@ -88,12 +103,17 @@ pub fn build_pool(trees: &[CADTree], links: &[CADLink]) -> Vec<CommandVariant> {
     let mut chain_no = 0;
 
     for start in starts {
-        let mut chains = Vec::new();
-        let mut path = vec![start];
-        let mut used_trees = HashSet::from([start.0]);
-        walk(&mut path, &mut used_trees, &graph, &nodes, &mut chains);
+        // Предки-команды стартового узла в цепочку не берём: потомок
+        // (0-100) унаследовал метку от Сделай и сам командой не является.
+        let blocked: HashSet<Key> = ancestor_keys(start, &nodes, &indexes)
+            .into_iter()
+            .filter(|key| nodes[key].is_command)
+            .collect();
 
-        for chain in chains {
+        let mut path = Vec::new();
+        let chains = expand_node(start, &graph, &nodes, &blocked, &mut path);
+
+        for chain in chains.into_iter().filter(|c| c.len() > 1) {
             chain_no += 1;
             let per_node: Vec<Vec<String>> = chain
                 .iter()
@@ -104,6 +124,7 @@ pub fn build_pool(trees: &[CADTree], links: &[CADLink]) -> Vec<CommandVariant> {
                     pool.push(CommandVariant {
                         id: format!("{chain_no}_{idx}"),
                         text: phrase,
+                        has_synonym: idx > 0,
                     });
                 }
             }
@@ -112,34 +133,83 @@ pub fn build_pool(trees: &[CADTree], links: &[CADLink]) -> Vec<CommandVariant> {
     pool
 }
 
-fn walk(
-    path: &mut Vec<Key>,
-    used_trees: &mut HashSet<i32>,
+/// Все полные варианты команды, начиная с узла `node`. Каждый вариант —
+/// упорядоченный список узлов. `path` — узлы, через которые мы сюда пришли.
+fn expand_node(
+    node: Key,
     graph: &HashMap<Key, Vec<Key>>,
     nodes: &HashMap<Key, &RawItem>,
-    out: &mut Vec<Vec<Key>>,
-) {
-    let last = *path.last().expect("path is never empty");
-    let mut extended = false;
+    blocked: &HashSet<Key>,
+    path: &mut Vec<Key>,
+) -> Vec<Vec<Key>> {
+    path.push(node);
 
-    if let Some(neighbours) = graph.get(&last) {
+    // Соседи по группам: (связь внутри своего дерева?, id дерева).
+    // false < true, поэтому связи в другие деревья идут раньше «своих».
+    let mut groups: BTreeMap<(bool, i32), Vec<Key>> = BTreeMap::new();
+    if let Some(neighbours) = graph.get(&node) {
         for &next in neighbours {
-            if used_trees.contains(&next.0) || nodes[&next].is_command {
+            if path.contains(&next) || blocked.contains(&next) {
                 continue;
             }
-            extended = true;
-            path.push(next);
-            used_trees.insert(next.0);
-            walk(path, used_trees, graph, nodes, out);
-            used_trees.remove(&next.0);
-            path.pop();
+            let inside_own_tree = next.0 == node.0;
+            if !inside_own_tree
+                && (path.iter().any(|key| key.0 == next.0) || nodes[&next].is_command)
+            {
+                continue;
+            }
+            groups.entry((inside_own_tree, next.0)).or_default().push(next);
         }
     }
 
-    // Записываем только максимальные цепочки (дальше идти некуда).
-    if !extended && path.len() > 1 {
-        out.push(path.clone());
+    let mut combos: Vec<Vec<Key>> = vec![vec![node]];
+    for (_, members) in groups {
+        let mut options: Vec<Vec<Key>> = Vec::new();
+        for member in members {
+            options.extend(expand_node(member, graph, nodes, blocked, path));
+        }
+
+        let mut next_combos = Vec::new();
+        'outer: for base in &combos {
+            for option in &options {
+                if next_combos.len() >= MAX_STRUCTURES_PER_COMMAND {
+                    break 'outer;
+                }
+                if option.iter().any(|key| base.contains(key)) {
+                    continue; // один и тот же узел дважды в команду не берём
+                }
+                let mut merged = base.clone();
+                merged.extend_from_slice(option);
+                next_combos.push(merged);
+            }
+        }
+        if !next_combos.is_empty() {
+            combos = next_combos;
+        }
     }
+
+    path.pop();
+    combos
+}
+
+/// Ключи всех предков узла (от ближнего к дальнему).
+fn ancestor_keys(
+    key: Key,
+    nodes: &HashMap<Key, &RawItem>,
+    indexes: &HashMap<i32, TreeIndex>,
+) -> Vec<Key> {
+    let mut result = Vec::new();
+    let mut seen = HashSet::from([key.1]);
+    let index = &indexes[&key.0];
+    let mut current = nodes[&key].parent_id;
+    while let Some(&parent) = index.by_id.get(&current) {
+        if !seen.insert(parent.id) {
+            break;
+        }
+        result.push((key.0, parent.id));
+        current = parent.parent_id;
+    }
+    result
 }
 
 /// Родители узла от ближнего к дальнему (защита от циклов по parent_id).
@@ -299,11 +369,19 @@ mod tests {
         assert_eq!(pool.len(), 2);
         assert_eq!(
             pool[0],
-            CommandVariant { id: "1_0".into(), text: "Включить Люстра спальня".into() }
+            CommandVariant {
+                id: "1_0".into(),
+                text: "Включить Люстра спальня".into(),
+                has_synonym: false
+            }
         );
         assert_eq!(
             pool[1],
-            CommandVariant { id: "1_1".into(), text: "Включить свет спальня".into() }
+            CommandVariant {
+                id: "1_1".into(),
+                text: "Включить свет спальня".into(),
+                has_synonym: true
+            }
         );
     }
 
@@ -348,5 +426,47 @@ mod tests {
         assert!(t.contains(&"Включить Мансарда спальная".to_string()));
         assert!(t.contains(&"Включить Второй этаж спальня".to_string()));
         assert!(!t.contains(&"Включить спальня".to_string()));
+    }
+
+    #[test]
+    fn links_inside_a_tree_complete_the_command() {
+        // зал(T1) — Телевизор(T2) — Громкость(T2) — Сделай(T3) — 0-100(T3)
+        let trees = vec![
+            tree(
+                1,
+                vec![item(1, 0, "Второй этаж", &[], false), item(2, 1, "зал", &[], false)],
+            ),
+            tree(
+                2,
+                vec![item(10, 0, "Телевизор", &[], false), item(11, 10, "Громкость", &[], false)],
+            ),
+            tree(
+                3,
+                vec![
+                    item(20, 0, "Сделай", &["Поставь"], true),
+                    // унаследовал метку команды от родителя
+                    item(21, 20, "0-100", &[], true),
+                ],
+            ),
+        ];
+        let links = vec![
+            link(1, 1, 2, 2, 10),
+            link(2, 2, 10, 2, 11),
+            link(3, 2, 11, 3, 20),
+            link(4, 3, 20, 3, 21),
+        ];
+        let pool = build_pool(&trees, &links);
+        let t = texts(pool.clone());
+        assert_eq!(
+            t,
+            vec![
+                "Сделай Громкость Телевизор зал 0-100".to_string(),
+                "Поставь Громкость Телевизор зал 0-100".to_string(),
+            ]
+        );
+        assert_eq!(pool[0].id, "1_0");
+        assert_eq!(pool[1].id, "1_1");
+        let rang: Vec<bool> = pool.iter().map(|v| v.has_synonym).collect();
+        assert_eq!(rang, vec![false, true]);
     }
 }
