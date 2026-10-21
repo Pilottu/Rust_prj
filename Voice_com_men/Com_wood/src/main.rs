@@ -6,6 +6,7 @@ use slint::ComponentHandle;
 slint::include_modules!();
 
 mod command_classifier;
+mod command_pool;
 mod historian;
 mod repository;
 mod state;
@@ -19,6 +20,7 @@ fn main() {
     let mut initial_state = state::load_initial_state();
     command_classifier::classify_state(&mut initial_state);
     repository::save_persisted_state(&initial_state);
+    repository::refresh_command_pool(&initial_state);
     let state = Rc::new(RefCell::new(initial_state));
     tree_ops::update_ui_models(&app, &state.borrow());
 

@@ -36,6 +36,7 @@ static CONNECTION: OnceLock<Mutex<Connection<'static>>> = OnceLock::new();
 static HISTORY_CONNECTION: OnceLock<Mutex<Connection<'static>>> = OnceLock::new();
 static LAST_SAVED_STATE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static CONFIG: OnceLock<SqlServerConfig> = OnceLock::new();
+static LAST_COMMAND_POOL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 fn config() -> &'static SqlServerConfig {
     CONFIG.get_or_init(load_config)
@@ -229,6 +230,10 @@ IF OBJECT_ID(N'dbo.CadLinks', N'U') IS NULL
         Side1 INT NOT NULL,
         Side2 INT NOT NULL,
         MidX REAL NOT NULL
+    );
+IF OBJECT_ID(N'dbo.CommandPool', N'U') IS NULL
+    CREATE TABLE dbo.CommandPool (
+        Vozmozhnie NVARCHAR(MAX) NOT NULL
     );
 "#,
     )?;
@@ -653,6 +658,73 @@ pub(crate) fn write_history_event(level: &str, message: &str) -> Result<(), Box<
     )?;
     Ok(())
 }
+fn save_command_pool(
+    connection: &Connection<'_>,
+    phrases_json: &str,
+) -> Result<(), Box<dyn Error>> {
+    connection.set_autocommit(false)?;
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        execute(connection, "DELETE FROM dbo.CommandPool;")?;
+        let json = bind_text(phrases_json);
+        connection.execute(
+            "INSERT INTO dbo.CommandPool (Vozmozhnie) SELECT [value] FROM OPENJSON(?) ORDER BY CAST([key] AS INT)",
+            (&json,),
+        )?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => connection.commit()?,
+        Err(error) => {
+            let _ = connection.rollback();
+            let _ = connection.set_autocommit(true);
+            return Err(error);
+        }
+    }
+    connection.set_autocommit(true)?;
+    Ok(())
+}
+
+fn sync_command_pool(connection: &Connection<'_>, trees: &[CADTree], links: &[CADLink]) {
+    let phrases: Vec<String> = crate::command_pool::build_pool(trees, links)
+        .into_iter()
+        .map(|variant| variant.text)
+        .collect();
+    let Ok(json) = serde_json::to_string(&phrases) else {
+        return;
+    };
+    let cache = LAST_COMMAND_POOL.get_or_init(|| Mutex::new(None));
+    let Ok(mut last) = cache.lock() else {
+        return;
+    };
+    if last.as_deref() == Some(&json) {
+        return;
+    }
+    match save_command_pool(connection, &json) {
+        Ok(()) => {
+            *last = Some(json);
+            crate::historian::log(
+                "INFO",
+                &format!("Пул команд обновлён: вариантов={}", phrases.len()),
+            );
+        }
+        Err(error) => crate::historian::log(
+            "ERROR",
+            &format!("Не удалось записать пул команд в SQL Server: {error}"),
+        ),
+    }
+}
+
+/// Принудительный пересчёт пула (например, при старте приложения).
+pub fn refresh_command_pool(state: &AppState) {
+    let Some(connection) = CONNECTION.get() else {
+        return;
+    };
+    let Ok(connection) = connection.lock() else {
+        return;
+    };
+    sync_command_pool(&connection, &state.trees, &state.cad_links);
+}
 
 fn to_persisted_state(state: &AppState) -> PersistedAppState {
     PersistedAppState {
@@ -755,7 +827,10 @@ pub fn save_persisted_state(state: &AppState) {
 
     match connection.lock() {
         Ok(connection) => match save_state(&connection, &persisted) {
-            Ok(()) => *last_saved = Some(snapshot),
+            Ok(()) => {
+                *last_saved = Some(snapshot);
+                sync_command_pool(&connection, &persisted.trees, &persisted.cad_links);
+            }
             Err(error) => crate::historian::log(
                 "ERROR",
                 &format!("Не удалось записать CAD-состояние в SQL Server: {error}"),

@@ -6,6 +6,7 @@ https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/src/ui_brid
 https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/src/win_native.rs
 https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/src/historian.rs
 https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/src/command_classifier.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/src/repository.rs
 
 https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/ui/app.slint
 https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/ui/cad_dialogs.slint

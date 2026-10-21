@@ -5,6 +5,7 @@ https://github.com/Pilottu/Rust_prj/blob/main/Smart_wood/src/tree_ops.rs
 https://github.com/Pilottu/Rust_prj/blob/main/Smart_wood/src/ui_bridge.rs
 https://github.com/Pilottu/Rust_prj/blob/main/Smart_wood/src/win_native.rs
 https://github.com/Pilottu/Rust_prj/blob/main/Smart_wood/src/historian.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Smart_wood/src/repository.rs
 
 https://github.com/Pilottu/Rust_prj/blob/main/Smart_wood/ui/app.slint
 https://github.com/Pilottu/Rust_prj/blob/main/Smart_wood/ui/cad_dialogs.slint
