@@ -15,3 +15,22 @@ encoder = "sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16\\encode
 decoder = "sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16\\decoder.onnx"
 joiner = "sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16\\joiner.int8.onnx"
 tokens = "sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16\\tokens.txt"
+
+[audio]
+# Часть имени устройства записи, регистр не важен. Пусто = устройство по умолчанию
+device = "UR28M"
+# "auto" — взять более громкий канал, "left", "right" или "mix"
+channel = "auto"
+# Усиление в дБ после выбора канала (для линейного входа обычно 0…+20)
+gain_db = 0.0
+# Частота для детектора речи и распознавателей
+target_sample_rate = 16000
+
+[voting]
+min_agree = 2
+
+[vad]
+threshold = 0.5
+min_silence_s = 0.5
+min_speech_s = 0.25
+max_speech_s = 8.0
