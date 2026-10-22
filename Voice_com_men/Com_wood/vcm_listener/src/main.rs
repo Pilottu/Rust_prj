@@ -1,3 +1,12 @@
+mod audio_config;
+mod capture;
+mod draft_norm;
+mod dsp;
+mod engines;
+mod listen;
+mod voting;
+
+use audio_config::{AudioConfig, VadConfig, VotingConfig};
 use serde::Deserialize;
 use sherpa_onnx::{
     OfflineRecognizer, OfflineRecognizerConfig, OnlineRecognizer, OnlineRecognizerConfig, Wave,
@@ -18,6 +27,12 @@ struct Config {
     gigaam: ModelFiles,
     t_one: ModelFiles,
     vosk: TransducerFiles,
+    #[serde(default)]
+    audio: AudioConfig,
+    #[serde(default)]
+    voting: VotingConfig,
+    #[serde(default)]
+    vad: VadConfig,
 }
 
 #[derive(Deserialize)]
@@ -42,9 +57,41 @@ fn resolve(models_dir: &Path, relative_path: &str) -> String {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("devices") {
+        return capture::print_devices();
+    }
+
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let config_text = fs::read_to_string(crate_dir.join("config.toml"))?;
     let config: Config = toml::from_str(&config_text)?;
+
+    if args.first().map(String::as_str) == Some("listen") {
+        let paths = engines::EnginePaths {
+            gigaam_model: resolve(&config.models_dir, &config.gigaam.model),
+            gigaam_tokens: resolve(&config.models_dir, &config.gigaam.tokens),
+            t_one_model: resolve(&config.models_dir, &config.t_one.model),
+            t_one_tokens: resolve(&config.models_dir, &config.t_one.tokens),
+            vosk_encoder: resolve(&config.models_dir, &config.vosk.encoder),
+            vosk_decoder: resolve(&config.models_dir, &config.vosk.decoder),
+            vosk_joiner: resolve(&config.models_dir, &config.vosk.joiner),
+            vosk_tokens: resolve(&config.models_dir, &config.vosk.tokens),
+        };
+        let vad_model = resolve(&config.models_dir, &config.silero_vad);
+        let wav = if args.get(1).map(String::as_str) == Some("--wav") {
+            args.get(2).map(PathBuf::from)
+        } else {
+            None
+        };
+        return listen::run(
+            &paths,
+            &vad_model,
+            &config.audio,
+            &config.vad,
+            &config.voting,
+            wav.as_deref(),
+        );
+    }
 
     let wav_path = config.models_dir.join(&config.test_wav);
     let wave = Wave::read(&wav_path.to_string_lossy())
