@@ -1,0 +1,8 @@
+[package]
+name = "vcm_norm"
+version = "0.1.0"
+edition = "2021"
+description = "Общий нормализатор команд и речи для vcm: ключ сравнения без учёта порядка слов, слот-число, индекс команд"
+
+[dependencies]
+rust-stemmers = "1.2"

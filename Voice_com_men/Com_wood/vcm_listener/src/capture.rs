@@ -4,6 +4,7 @@
 // имени, выбор канала и усиление, приведение к 16 кГц, передача кусков по каналу.
 
 use std::error::Error;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -78,8 +79,21 @@ fn pick_device(host: &cpal::Host, needle: &str) -> Result<cpal::Device, String> 
     ))
 }
 
+static GLITCHES: AtomicU64 = AtomicU64::new(0);
+static FIRST_ERROR_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// Ошибки потока (чаще всего «buffer underrun/overrun» — потеря кусочка звука)
+/// не печатаем каждую отдельно: считаем, а счётчик показывает индикатор уровня.
 fn on_error(err: cpal::Error) {
-    eprintln!("Ошибка аудиопотока: {err}");
+    GLITCHES.fetch_add(1, Ordering::Relaxed);
+    if !FIRST_ERROR_SHOWN.swap(true, Ordering::Relaxed) {
+        eprintln!("\nОшибка аудиопотока (дальше только счётчик): {err}");
+    }
+}
+
+/// Сколько ошибок потока было с прошлого вызова.
+pub fn take_glitches() -> u64 {
+    GLITCHES.swap(0, Ordering::Relaxed)
 }
 
 fn make_callback<T: Copy + 'static>(
@@ -111,7 +125,10 @@ pub fn start(cfg: &AudioConfig, tx: Sender<Vec<f32>>) -> Result<Capture, Box<dyn
     let channels = supported.channels() as usize;
     let device_rate = supported.sample_rate();
     let format = supported.sample_format();
-    let config = supported.config();
+    let mut config = supported.config();
+    if cfg.buffer_frames > 0 {
+        config.buffer_size = cpal::BufferSize::Fixed(cfg.buffer_frames);
+    }
 
     let mixer = MonoMixer::new(channels, device_rate, cfg.channel, cfg.gain_db);
     let resampler = Resampler::new(device_rate, cfg.target_sample_rate);
@@ -142,7 +159,11 @@ pub fn start(cfg: &AudioConfig, tx: Sender<Vec<f32>>) -> Result<Capture, Box<dyn
             .into())
         }
     }
-    .map_err(|e| format!("не удалось открыть устройство «{device_name}»: {e}"))?;
+    .map_err(|e| {
+        format!(
+            "не удалось открыть устройство «{device_name}»: {e} (если задан buffer_frames, попробуйте 0)"
+        )
+    })?;
 
     stream
         .play()

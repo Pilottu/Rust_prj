@@ -233,11 +233,44 @@ IF OBJECT_ID(N'dbo.CadLinks', N'U') IS NULL
     );
 IF OBJECT_ID(N'dbo.CommandPool', N'U') IS NULL
     CREATE TABLE dbo.CommandPool (
+        CmdKey NVARCHAR(450) NOT NULL DEFAULT N'',
         Vozmozhnie NVARCHAR(MAX) NOT NULL,
-        Rang BIT NOT NULL DEFAULT 0
+        Rang BIT NOT NULL DEFAULT 0,
+        MatchKey NVARCHAR(450) NOT NULL DEFAULT N'',
+        HasSlot BIT NOT NULL DEFAULT 0,
+        SlotMin INT NULL,
+        SlotMax INT NULL
     );
 IF COL_LENGTH(N'dbo.CommandPool', N'Rang') IS NULL
     ALTER TABLE dbo.CommandPool ADD Rang BIT NOT NULL DEFAULT 0;
+IF COL_LENGTH(N'dbo.CommandPool', N'CmdKey') IS NULL
+    ALTER TABLE dbo.CommandPool ADD CmdKey NVARCHAR(450) NOT NULL DEFAULT N'';
+IF COL_LENGTH(N'dbo.CommandPool', N'MatchKey') IS NULL
+    ALTER TABLE dbo.CommandPool ADD MatchKey NVARCHAR(450) NOT NULL DEFAULT N'';
+IF COL_LENGTH(N'dbo.CommandPool', N'HasSlot') IS NULL
+    ALTER TABLE dbo.CommandPool ADD HasSlot BIT NOT NULL DEFAULT 0;
+IF COL_LENGTH(N'dbo.CommandPool', N'SlotMin') IS NULL
+    ALTER TABLE dbo.CommandPool ADD SlotMin INT NULL;
+IF COL_LENGTH(N'dbo.CommandPool', N'SlotMax') IS NULL
+    ALTER TABLE dbo.CommandPool ADD SlotMax INT NULL;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_CommandPool_MatchKey' AND object_id = OBJECT_ID(N'dbo.CommandPool'))
+    EXEC(N'CREATE INDEX IX_CommandPool_MatchKey ON dbo.CommandPool (MatchKey)');
+IF OBJECT_ID(N'dbo.CommandBindings', N'U') IS NULL
+    CREATE TABLE dbo.CommandBindings (
+        CmdKey NVARCHAR(450) NOT NULL PRIMARY KEY,
+        TagName NVARCHAR(256) NOT NULL,
+        ValueType NVARCHAR(16) NOT NULL DEFAULT N'bit',
+        UpdatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+    );
+IF OBJECT_ID(N'dbo.CommandResults', N'U') IS NULL
+    CREATE TABLE dbo.CommandResults (
+        CmdKey NVARCHAR(450) NOT NULL PRIMARY KEY,
+        TagName NVARCHAR(256) NOT NULL,
+        ValueBit BIT NULL,
+        ValueNum FLOAT NULL,
+        Seq BIGINT NOT NULL DEFAULT 0,
+        UpdatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+    );
 "#,
     )?;
     Ok(())
@@ -668,9 +701,13 @@ fn save_command_pool(
     connection.set_autocommit(false)?;
     let result = (|| -> Result<(), Box<dyn Error>> {
         execute(connection, "DELETE FROM dbo.CommandPool;")?;
+        execute(
+            connection,
+            "CREATE OR ALTER VIEW dbo.v_CommandReference AS SELECT p.CmdKey, p.Vozmozhnie AS Phrase, p.HasSlot, p.SlotMin, p.SlotMax, b.TagName, b.ValueType FROM dbo.CommandPool AS p LEFT JOIN dbo.CommandBindings AS b ON b.CmdKey = p.CmdKey WHERE p.Rang = 0",
+        )?;
         let json = bind_text(phrases_json);
         connection.execute(
-            "INSERT INTO dbo.CommandPool (Vozmozhnie, Rang) SELECT Vozmozhnie, Rang FROM OPENJSON(?) WITH (Vozmozhnie NVARCHAR(MAX) '$.v', Rang BIT '$.r')",
+            "INSERT INTO dbo.CommandPool (CmdKey, Vozmozhnie, Rang, MatchKey, HasSlot, SlotMin, SlotMax) SELECT CmdKey, Vozmozhnie, Rang, MatchKey, HasSlot, SlotMin, SlotMax FROM OPENJSON(?) WITH (CmdKey NVARCHAR(450) '$.c', Vozmozhnie NVARCHAR(MAX) '$.v', Rang BIT '$.r', MatchKey NVARCHAR(450) '$.m', HasSlot BIT '$.h', SlotMin INT '$.a', SlotMax INT '$.b')",
             (&json,),
         )?;
         Ok(())
@@ -688,10 +725,45 @@ fn save_command_pool(
     Ok(())
 }
 
+/// Предупреждает в журнале, если у РАЗНЫХ команд совпал ключ сравнения: по такой
+/// фразе речь нельзя однозначно отнести к команде.
+fn report_collisions(pool: &[crate::command_pool::CommandVariant]) {
+    let mut by_key: HashMap<&str, Vec<&str>> = HashMap::new();
+    for variant in pool {
+        let commands = by_key.entry(variant.match_key.as_str()).or_default();
+        if !commands.contains(&variant.cmd_key.as_str()) {
+            commands.push(variant.cmd_key.as_str());
+        }
+    }
+    let mut shown = 0;
+    for (key, commands) in by_key.iter().filter(|(_, c)| c.len() > 1) {
+        if shown == 5 {
+            break;
+        }
+        shown += 1;
+        crate::historian::log(
+            "WARN",
+            &format!("Пул команд: одинаковый ключ «{key}» у разных команд {commands:?}"),
+        );
+    }
+}
+
 fn sync_command_pool(connection: &Connection<'_>, trees: &[CADTree], links: &[CADLink]) {
-    let phrases: Vec<serde_json::Value> = crate::command_pool::build_pool(trees, links)
-        .into_iter()
-        .map(|variant| serde_json::json!({ "v": variant.text, "r": u8::from(variant.has_synonym) }))
+    let pool = crate::command_pool::build_pool(trees, links);
+    report_collisions(&pool);
+    let phrases: Vec<serde_json::Value> = pool
+        .iter()
+        .map(|variant| {
+            serde_json::json!({
+                "c": variant.cmd_key.chars().take(450).collect::<String>(),
+                "v": variant.text,
+                "r": u8::from(variant.has_synonym),
+                "m": variant.match_key.chars().take(450).collect::<String>(),
+                "h": u8::from(variant.slot_min.is_some()),
+                "a": variant.slot_min,
+                "b": variant.slot_max,
+            })
+        })
         .collect();
     let Ok(json) = serde_json::to_string(&phrases) else {
         return;

@@ -8,6 +8,7 @@ sherpa-onnx = "1.13.8"
 cpal = "0.18"
 rust-stemmers = "1.2"
 odbc-api = "29"
+vcm_norm = { path = "../vcm_norm" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1"

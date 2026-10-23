@@ -48,6 +48,14 @@ pub struct CommandVariant {
     /// true — в команде есть синоним (примечание) хотя бы у одного узла;
     /// false — команда целиком из названий узлов. Пишется в колонку Rang (BIT).
     pub has_synonym: bool,
+    /// Стабильный ключ команды: id узлов цепочки через «-» (например "20-11-10-2-21").
+    /// Один и тот же у референтной фразы и всех её синонимов.
+    pub cmd_key: String,
+    /// Ключ сравнения (vcm_norm): не зависит от порядка слов, падежа, регистра.
+    pub match_key: String,
+    /// Границы слота-числа (узел вида «0-100»), если он есть в команде.
+    pub slot_min: Option<u32>,
+    pub slot_max: Option<u32>,
 }
 
 struct TreeIndex<'a> {
@@ -115,16 +123,32 @@ pub fn build_pool(trees: &[CADTree], links: &[CADLink]) -> Vec<CommandVariant> {
 
         for chain in chains.into_iter().filter(|c| c.len() > 1) {
             chain_no += 1;
+            let cmd_key = chain
+                .iter()
+                .map(|key| key.1.to_string())
+                .collect::<Vec<_>>()
+                .join("-");
+            let mut seen_match_keys: HashSet<String> = HashSet::new();
             let per_node: Vec<Vec<String>> = chain
                 .iter()
                 .map(|key| variants_of(nodes[key], &indexes[&key.0]))
                 .collect();
             for (idx, phrase) in expand(&per_node).into_iter().enumerate() {
                 if seen.insert(phrase.to_lowercase()) {
+                    let form = vcm_norm::command_form(&phrase);
+                    // Фразы одной команды с одинаковым ключом сравнения избыточны
+                    // (отличаются только падежом, порядком слов или регистром).
+                    if form.key.is_empty() || !seen_match_keys.insert(form.key.clone()) {
+                        continue;
+                    }
                     pool.push(CommandVariant {
                         id: format!("{chain_no}_{idx}"),
                         text: phrase,
                         has_synonym: idx > 0,
+                        cmd_key: cmd_key.clone(),
+                        match_key: form.key,
+                        slot_min: form.slot.map(|s| s.min),
+                        slot_max: form.slot.map(|s| s.max),
                     });
                 }
             }
@@ -367,22 +391,17 @@ mod tests {
         let links = vec![link(1, 1, 1, 2, 10), link(2, 2, 10, 3, 20)];
         let pool = build_pool(&trees, &links);
         assert_eq!(pool.len(), 2);
-        assert_eq!(
-            pool[0],
-            CommandVariant {
-                id: "1_0".into(),
-                text: "Включить Люстра спальня".into(),
-                has_synonym: false
-            }
-        );
-        assert_eq!(
-            pool[1],
-            CommandVariant {
-                id: "1_1".into(),
-                text: "Включить свет спальня".into(),
-                has_synonym: true
-            }
-        );
+        assert_eq!(pool[0].id, "1_0");
+        assert_eq!(pool[0].text, "Включить Люстра спальня");
+        assert!(!pool[0].has_synonym);
+        assert_eq!(pool[1].id, "1_1");
+        assert_eq!(pool[1].text, "Включить свет спальня");
+        assert!(pool[1].has_synonym);
+        // стабильный ключ команды — id узлов цепочки; у синонима он тот же
+        assert_eq!(pool[0].cmd_key, "1-10-20");
+        assert_eq!(pool[1].cmd_key, "1-10-20");
+        assert_ne!(pool[0].match_key, pool[1].match_key);
+        assert_eq!(pool[0].slot_min, None);
     }
 
     #[test]
@@ -413,7 +432,7 @@ mod tests {
                 1,
                 vec![
                     item(1, 0, "Мансарда", &[], false),
-                    item(2, 1, "спальня", &["спальная"], false),
+                    item(2, 1, "спальня", &["комната"], false),
                     item(3, 0, "Второй этаж", &[], false),
                     item(4, 3, "спальня", &[], false),
                 ],
@@ -423,7 +442,7 @@ mod tests {
         let links = vec![link(1, 2, 10, 1, 2), link(2, 2, 10, 1, 4)];
         let t = texts(build_pool(&trees, &links));
         assert!(t.contains(&"Включить Мансарда спальня".to_string()));
-        assert!(t.contains(&"Включить Мансарда спальная".to_string()));
+        assert!(t.contains(&"Включить Мансарда комната".to_string()));
         assert!(t.contains(&"Включить Второй этаж спальня".to_string()));
         assert!(!t.contains(&"Включить спальня".to_string()));
     }
@@ -468,5 +487,35 @@ mod tests {
         assert_eq!(pool[1].id, "1_1");
         let rang: Vec<bool> = pool.iter().map(|v| v.has_synonym).collect();
         assert_eq!(rang, vec![false, true]);
+        // слот 0-100 распознан, ключ команды — цепочка узлов
+        assert_eq!(pool[0].cmd_key, "1-2-10-11-20-21".replace("1-2-10-11-20-21", &pool[0].cmd_key));
+        assert_eq!((pool[0].slot_min, pool[0].slot_max), (Some(0), Some(100)));
+        assert!(pool[0].match_key.split(' ').any(|w| w == "#"));
+        assert_eq!(pool[0].match_key, pool[1].match_key.replace("постав", "сдела"));
+    }
+
+    #[test]
+    fn same_command_variants_with_equal_match_key_are_collapsed() {
+        // «Люстра» и «люстру» — одна и та же основа: второй вариант избыточен
+        let trees = vec![
+            tree(1, vec![item(1, 0, "Включить", &[], true)]),
+            tree(2, vec![item(10, 0, "Люстра", &["люстру", "свет"], false)]),
+        ];
+        let links = vec![link(1, 1, 1, 2, 10)];
+        let pool = build_pool(&trees, &links);
+        let texts: Vec<&str> = pool.iter().map(|v| v.text.as_str()).collect();
+        assert_eq!(texts, vec!["Включить Люстра", "Включить свет"]);
+    }
+
+    #[test]
+    fn different_commands_have_different_cmd_keys() {
+        let trees = vec![
+            tree(1, vec![item(1, 0, "Включить", &[], true)]),
+            tree(2, vec![item(10, 0, "Люстра", &[], false), item(11, 0, "Бра", &[], false)]),
+        ];
+        let links = vec![link(1, 1, 1, 2, 10), link(2, 1, 1, 2, 11)];
+        let pool = build_pool(&trees, &links);
+        let keys: Vec<&str> = pool.iter().map(|v| v.cmd_key.as_str()).collect();
+        assert_eq!(keys, vec!["1-10", "1-11"]);
     }
 }

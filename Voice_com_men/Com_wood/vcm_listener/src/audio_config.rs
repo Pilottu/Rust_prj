@@ -25,6 +25,9 @@ pub struct AudioConfig {
     pub gain_db: f32,
     /// Частота для VAD и распознавателей.
     pub target_sample_rate: u32,
+    /// Размер буфера захвата в кадрах (при 96 кГц 4096 ≈ 43 мс). 0 — по умолчанию.
+    /// Если в консоли часто «пропуски звука», попробуйте 2048 или 4096.
+    pub buffer_frames: u32,
 }
 
 impl Default for AudioConfig {
@@ -34,6 +37,7 @@ impl Default for AudioConfig {
             channel: ChannelMode::Auto,
             gain_db: 0.0,
             target_sample_rate: 16_000,
+            buffer_frames: 0,
         }
     }
 }

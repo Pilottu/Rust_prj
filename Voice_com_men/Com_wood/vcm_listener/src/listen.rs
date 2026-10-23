@@ -5,6 +5,7 @@
 // печатается на экран. Ключ сравнения здесь ЧЕРНОВОЙ (draft_norm), настоящий
 // нормализатор со стеммером и словарём команд будет позже.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::io::Write;
 use std::path::Path;
@@ -14,10 +15,11 @@ use sherpa_onnx::{SileroVadModelConfig, VadModelConfig, VoiceActivityDetector, W
 
 use crate::audio_config::{AudioConfig, VadConfig, VotingConfig};
 use crate::capture;
-use crate::draft_norm::draft_key;
 use crate::dsp::Resampler;
 use crate::engines::{EngineBank, EnginePaths};
 use crate::history::History;
+use crate::sql_pool::{self, SqlConfig};
+use vcm_norm::{speech_form, CommandIndex, Match};
 use crate::voting::{vote, EngineVote, Interpretation, Verdict};
 
 const SAMPLE_RATE: u32 = 16_000;
@@ -33,6 +35,8 @@ struct Pipeline {
     history: History,
     pre_roll: usize,
     post_roll: usize,
+    index: CommandIndex,
+    reference: HashMap<String, String>,
 }
 
 fn create_vad(model: &str, cfg: &VadConfig) -> Result<VoiceActivityDetector, Box<dyn Error>> {
@@ -56,16 +60,47 @@ fn create_vad(model: &str, cfg: &VadConfig) -> Result<VoiceActivityDetector, Box
         .ok_or_else(|| "не удалось создать детектор речи (проверьте silero_vad.onnx)".into())
 }
 
-fn interpretation_of(text: &str) -> Option<Interpretation> {
-    let key = draft_key(text);
-    if key.is_empty() {
-        None
-    } else {
-        Some(Interpretation { cmd_key: key, number: None })
-    }
-}
 
 impl Pipeline {
+    fn reference_of(&self, cmd_key: &str) -> String {
+        self.reference
+            .get(cmd_key)
+            .cloned()
+            .unwrap_or_else(|| format!("команда {cmd_key}"))
+    }
+
+    /// Разбор текста одного движка: что он «услышал» как команду.
+    fn interpret(&self, text: &str) -> (Option<Interpretation>, String) {
+        if text.trim().is_empty() {
+            return (None, String::new());
+        }
+        match self.index.lookup(&speech_form(text)) {
+            Match::Exact { cmd_key, number } => {
+                let note = match number {
+                    Some(n) => format!("→ {} [{}]", self.reference_of(&cmd_key), n),
+                    None => format!("→ {}", self.reference_of(&cmd_key)),
+                };
+                (Some(Interpretation { cmd_key, number }), note)
+            }
+            Match::NeedNumber { cmd_key } => {
+                let note = format!("→ {} (число не услышано)", self.reference_of(&cmd_key));
+                (Some(Interpretation { cmd_key, number: None }), note)
+            }
+            Match::OutOfRange { cmd_key, number, slot } => (
+                None,
+                format!(
+                    "→ {}: число {} вне диапазона {}–{}",
+                    self.reference_of(&cmd_key),
+                    number,
+                    slot.min,
+                    slot.max
+                ),
+            ),
+            Match::Ambiguous(keys) => (None, format!("→ неоднозначно ({} команд)", keys.len())),
+            Match::None => (None, "→ такой команды нет".to_string()),
+        }
+    }
+
     fn feed(&mut self, chunk: &[f32]) {
         self.history.push(chunk);
         self.vad.accept_waveform(chunk);
@@ -123,22 +158,27 @@ impl Pipeline {
 
         let texts = self.bank.recognize(Arc::new(padded));
 
+        let parsed: Vec<(Option<Interpretation>, String)> =
+            texts.iter().map(|t| self.interpret(&t.text)).collect();
+
         println!(
             "\n[#{}] фраза {:.1} с (контекст: {:.2} с до, {:.2} с после)",
             self.counter, seconds, pre_s, post_s
         );
-        for t in &texts {
+        for (t, (_, note)) in texts.iter().zip(&parsed) {
             println!(
-                "  {:<7} {:>5.2} с  {}",
+                "  {:<7} {:>5.2} с  {}  {}",
                 t.engine,
                 t.elapsed.as_secs_f64(),
-                if t.text.is_empty() { "—" } else { t.text.as_str() }
+                if t.text.is_empty() { "—" } else { t.text.as_str() },
+                note
             );
         }
 
         let votes: Vec<EngineVote> = texts
             .iter()
-            .map(|t| EngineVote { engine: t.engine, interpretation: interpretation_of(&t.text) })
+            .zip(&parsed)
+            .map(|(t, (interp, _))| EngineVote { engine: t.engine, interpretation: interp.clone() })
             .collect();
 
         match vote(&votes, self.min_agree) {
@@ -148,17 +188,32 @@ impl Pipeline {
                 } else {
                     format!("; не согласны: {}", dissent.join(", "))
                 };
-                println!(
-                    "  Голосование: ПРИНЯТО {}/{} — ключ «{}»; согласны: {}{}",
-                    agreed.len(),
-                    votes.len(),
-                    interpretation.cmd_key,
-                    agreed.join(", "),
-                    against
-                );
+                let command = self.reference_of(&interpretation.cmd_key);
+                match (self.index.slot(&interpretation.cmd_key), interpretation.number) {
+                    (Some(slot), None) => println!(
+                        "  Голосование: команда «{}» ясна ({}/{}), но число {}–{} не услышано — переспросить число",
+                        command,
+                        agreed.len(),
+                        votes.len(),
+                        slot.min,
+                        slot.max
+                    ),
+                    (_, number) => println!(
+                        "  Голосование: ПРИНЯТО {}/{} — «{}»{}; согласны: {}{}",
+                        agreed.len(),
+                        votes.len(),
+                        command,
+                        number.map(|n| format!(", значение {n}")).unwrap_or_default(),
+                        agreed.join(", "),
+                        against
+                    ),
+                }
             }
             Verdict::NeedNumber { cmd_key } => {
-                println!("  Голосование: команда «{cmd_key}» ясна, число расходится — переспросить число");
+                println!(
+                    "  Голосование: команда «{}» ясна, число расходится — переспросить число",
+                    self.reference_of(&cmd_key)
+                );
             }
             Verdict::NoAgreement => println!("  Голосование: НЕТ СОГЛАСИЯ — переспросить"),
             Verdict::NothingRecognized => println!("  Голосование: ничего не распознано"),
@@ -184,7 +239,13 @@ impl Meter {
             let rms = (self.sum_sq / self.count as f64).sqrt().max(1e-9);
             let db = 20.0 * rms.log10();
             let bars = (((db + 60.0) / 60.0) * 30.0).clamp(0.0, 30.0) as usize;
-            print!("\r  уровень {:>6.1} dBFS |{:<30}|", db, "#".repeat(bars));
+            let glitches = capture::take_glitches();
+            let note = if glitches > 0 {
+                format!(" пропусков звука: {glitches}")
+            } else {
+                String::new()
+            };
+            print!("\r  уровень {:>6.1} dBFS |{:<30}|{:<24}", db, "#".repeat(bars), note);
             let _ = std::io::stdout().flush();
             self.sum_sq = 0.0;
             self.count = 0;
@@ -198,8 +259,17 @@ pub fn run(
     audio: &AudioConfig,
     vad_cfg: &VadConfig,
     voting: &VotingConfig,
+    sql: &SqlConfig,
     wav: Option<&Path>,
 ) -> Result<(), Box<dyn Error>> {
+    println!("Читаю пул команд из SQL Server ({} / {})...", sql.server, sql.database);
+    let pool = sql_pool::load_pool(sql)
+        .map_err(|e| format!("не удалось прочитать dbo.CommandPool: {e}"))?;
+    println!("Команд: {}, вариантов фраз: {}", pool.reference.len(), pool.index.len());
+    if pool.index.is_empty() {
+        println!("ВНИМАНИЕ: пул пуст. Запустите основную программу, чтобы она записала пул, и перезапустите слушатель.");
+    }
+
     println!("Загружаю модели (три распознавателя и детектор речи)...");
     let bank = EngineBank::start(paths)?;
     let vad = create_vad(vad_model, vad_cfg)?;
@@ -211,6 +281,8 @@ pub fn run(
         history: History::new(20 * SAMPLE_RATE as usize),
         pre_roll: (vad_cfg.pre_roll_s.max(0.0) * SAMPLE_RATE as f32) as usize,
         post_roll: (vad_cfg.post_roll_s.max(0.0) * SAMPLE_RATE as f32) as usize,
+        index: pool.index,
+        reference: pool.reference,
     };
 
     match wav {
