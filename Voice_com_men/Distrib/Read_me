@@ -5,3 +5,8 @@
 cd E:\Prog\rust_prj\voice_com_men\com_wood
 cd E:\Prog\rust_prj\Smart_wood
 cd E:\Prog\rust_prj\Voice_com_men\Com_wood\vcm_listener
+
+cargo run --release -- devices покажет устройства записи, их частоту и число каналов. Проверьте, что UR28M есть в списке, и что подстрока из [audio] device её находит.
+cargo run --release -- listen открывает микрофон. Строка уровень … dBFS обновляется раз в секунду: если там около −90, звука нет (смотрите канал и усиление). После каждой фразы печатаются тексты трёх движков, время и вердикт голосования.
+cargo run --release -- listen --wav путь\к\файлу.wav гоняет тот же конвейер по записи. Удобно для повторяемых проверок, но файл должен быть моно.
+cargo test запускает 30 тестов.

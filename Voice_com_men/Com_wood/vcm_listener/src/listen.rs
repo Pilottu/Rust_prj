@@ -17,6 +17,7 @@ use crate::capture;
 use crate::draft_norm::draft_key;
 use crate::dsp::Resampler;
 use crate::engines::{EngineBank, EnginePaths};
+use crate::history::History;
 use crate::voting::{vote, EngineVote, Interpretation, Verdict};
 
 const SAMPLE_RATE: u32 = 16_000;
@@ -29,6 +30,9 @@ struct Pipeline {
     bank: EngineBank,
     min_agree: usize,
     counter: usize,
+    history: History,
+    pre_roll: usize,
+    post_roll: usize,
 }
 
 fn create_vad(model: &str, cfg: &VadConfig) -> Result<VoiceActivityDetector, Box<dyn Error>> {
@@ -63,6 +67,7 @@ fn interpretation_of(text: &str) -> Option<Interpretation> {
 
 impl Pipeline {
     fn feed(&mut self, chunk: &[f32]) {
+        self.history.push(chunk);
         self.vad.accept_waveform(chunk);
         self.drain_segments();
     }
@@ -90,16 +95,38 @@ impl Pipeline {
         self.counter += 1;
         let seconds = samples.len() as f32 / SAMPLE_RATE as f32;
 
+        // Реальный звук до и после фразы: детектор речи начинает с опозданием и
+        // отдаёт сегмент без начала. Находим сегмент в истории и берём контекст.
+        let (core, pre_s, post_s): (Vec<f32>, f32, f32) = match self.history.find(samples) {
+            Some(start) => {
+                let end = start + samples.len();
+                let (from, slice) = self
+                    .history
+                    .range(start.saturating_sub(self.pre_roll), end + self.post_roll);
+                let pre = start - from;
+                let post = slice.len().saturating_sub(pre + samples.len());
+                (
+                    slice.to_vec(),
+                    pre as f32 / SAMPLE_RATE as f32,
+                    post as f32 / SAMPLE_RATE as f32,
+                )
+            }
+            None => (samples.to_vec(), 0.0, 0.0), // в истории не нашли — как раньше
+        };
+
         let lead = (SAMPLE_RATE as f32 * LEAD_PADDING_S) as usize;
         let tail = (SAMPLE_RATE as f32 * TAIL_PADDING_S) as usize;
-        let mut padded = Vec::with_capacity(lead + samples.len() + tail);
+        let mut padded = Vec::with_capacity(lead + core.len() + tail);
         padded.extend(std::iter::repeat(0.0f32).take(lead));
-        padded.extend_from_slice(samples);
+        padded.extend_from_slice(&core);
         padded.extend(std::iter::repeat(0.0f32).take(tail));
 
         let texts = self.bank.recognize(Arc::new(padded));
 
-        println!("\n[#{}] фраза {:.1} с", self.counter, seconds);
+        println!(
+            "\n[#{}] фраза {:.1} с (контекст: {:.2} с до, {:.2} с после)",
+            self.counter, seconds, pre_s, post_s
+        );
         for t in &texts {
             println!(
                 "  {:<7} {:>5.2} с  {}",
@@ -176,7 +203,15 @@ pub fn run(
     println!("Загружаю модели (три распознавателя и детектор речи)...");
     let bank = EngineBank::start(paths)?;
     let vad = create_vad(vad_model, vad_cfg)?;
-    let mut pipeline = Pipeline { vad, bank, min_agree: voting.min_agree, counter: 0 };
+    let mut pipeline = Pipeline {
+        vad,
+        bank,
+        min_agree: voting.min_agree,
+        counter: 0,
+        history: History::new(20 * SAMPLE_RATE as usize),
+        pre_roll: (vad_cfg.pre_roll_s.max(0.0) * SAMPLE_RATE as f32) as usize,
+        post_roll: (vad_cfg.post_roll_s.max(0.0) * SAMPLE_RATE as f32) as usize,
+    };
 
     match wav {
         Some(path) => {

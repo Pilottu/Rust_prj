@@ -50,6 +50,10 @@ pub struct VadConfig {
     pub min_speech_s: f32,
     /// Фразы длиннее этого (секунд) режутся принудительно.
     pub max_speech_s: f32,
+    /// Сколько секунд реального звука взять ПЕРЕД фразой (детектор начинает с опозданием).
+    pub pre_roll_s: f32,
+    /// Сколько секунд реального звука взять ПОСЛЕ фразы.
+    pub post_roll_s: f32,
 }
 
 impl Default for VadConfig {
@@ -59,6 +63,8 @@ impl Default for VadConfig {
             min_silence_s: 0.5,
             min_speech_s: 0.25,
             max_speech_s: 8.0,
+            pre_roll_s: 0.3,
+            post_roll_s: 0.2,
         }
     }
 }

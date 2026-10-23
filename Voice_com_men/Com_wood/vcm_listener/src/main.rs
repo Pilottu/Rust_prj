@@ -3,6 +3,7 @@ mod capture;
 mod draft_norm;
 mod dsp;
 mod engines;
+mod history;
 mod listen;
 mod voting;
 
