@@ -1,10 +1,12 @@
 mod audio_config;
 mod capture;
+mod config_edit;
 mod dialog;
 mod dsp;
 mod engines;
 mod history;
 mod listen;
+mod settings;
 mod sql_pool;
 mod tts;
 mod voting;
@@ -71,8 +73,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         return capture::print_devices();
     }
 
-    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let config_text = fs::read_to_string(crate_dir.join("config.toml"))?;
+    if args.first().map(String::as_str) == Some("settings") {
+        let port = match args.get(1).map(String::as_str) {
+            Some("--port") => args.get(2).and_then(|p| p.parse().ok()).unwrap_or(8765),
+            _ => 8765,
+        };
+        return settings::run(port, &settings::config_path());
+    }
+
+    let config_text = fs::read_to_string(settings::config_path())?;
     let config: Config = toml::from_str(&config_text)?;
 
     if args.first().map(String::as_str) == Some("listen") {

@@ -23,6 +23,8 @@ pub struct TtsConfig {
     pub enabled: bool,
     /// Часть имени голоса. Пусто или не найдено — первый русский голос.
     pub voice: String,
+    /// Часть имени устройства воспроизведения (колонки, наушники). Пусто — по умолчанию в Windows.
+    pub output_device: String,
     /// Скорость речи, от -10 до 10.
     pub rate: i32,
     /// Громкость, 0..100.
@@ -42,6 +44,7 @@ impl Default for TtsConfig {
         Self {
             enabled: true,
             voice: "Irina".to_string(),
+            output_device: String::new(),
             rate: 0,
             volume: 100,
             confirm: false,
@@ -89,7 +92,11 @@ impl Speaker {
         if !cfg.enabled {
             return Ok(Self::disabled());
         }
-        let script = powershell_script(cfg);
+        let script = if cfg.output_device.trim().is_empty() {
+            powershell_script(cfg)
+        } else {
+            powershell_script_sapi(cfg)
+        };
         let mut cmd = Command::new("powershell.exe");
         cmd.args([
             "-NoProfile",
@@ -208,6 +215,102 @@ try {{
     )
 }
 
+/// Скрипт с выбором устройства воспроизведения: System.Speech его выбрать не умеет,
+/// поэтому здесь SAPI.SpVoice (COM), где у голоса можно задать AudioOutput.
+pub fn powershell_script_sapi(cfg: &TtsConfig) -> String {
+    let voice = cfg.voice.replace('\'', "''");
+    let output = cfg.output_device.trim().replace('\'', "''");
+    let rate = cfg.rate.clamp(-10, 10);
+    let volume = cfg.volume.min(100);
+    format!(
+        r#"$ErrorActionPreference = 'Stop'
+[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+try {{
+  $v = New-Object -ComObject SAPI.SpVoice
+  $wanted = '{voice}'
+  $tok = $null
+  if ($wanted -ne '') {{ $tok = $v.GetVoices() | Where-Object {{ $_.GetDescription() -like "*$wanted*" }} | Select-Object -First 1 }}
+  if ($tok -eq $null) {{ $tok = $v.GetVoices() | Where-Object {{ $_.GetAttribute('Language') -like '419*' }} | Select-Object -First 1 }}
+  if ($tok -eq $null) {{ [Console]::Out.WriteLine('error:не найден русский голос'); [Console]::Out.Flush(); exit 2 }}
+  $v.Voice = $tok
+  $out = '{output}'
+  $o = $v.GetAudioOutputs() | Where-Object {{ $_.GetDescription() -like "*$out*" }} | Select-Object -First 1
+  if ($o -eq $null) {{ [Console]::Out.WriteLine('error:не найдено устройство воспроизведения «' + $out + '»'); [Console]::Out.Flush(); exit 3 }}
+  $v.AudioOutput = $o
+  $v.Rate = {rate}
+  $v.Volume = {volume}
+  [Console]::Out.WriteLine('ready:' + $tok.GetDescription() + ' → ' + $o.GetDescription()); [Console]::Out.Flush()
+  while ($true) {{
+    $line = [Console]::In.ReadLine()
+    if ($line -eq $null) {{ break }}
+    if ($line.Trim() -ne '') {{ $null = $v.Speak($line, 0) }}
+    [Console]::Out.WriteLine('done'); [Console]::Out.Flush()
+  }}
+}} catch {{
+  [Console]::Out.WriteLine('error:' + $_.Exception.Message); [Console]::Out.Flush(); exit 1
+}}
+"#
+    )
+}
+
+/// Голоса и устройства воспроизведения, известные Windows (SAPI).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SapiLists {
+    pub voices: Vec<String>,
+    pub outputs: Vec<String>,
+}
+
+/// «Microsoft Irina Desktop - Russian» -> «Microsoft Irina Desktop» (так имя подходит и
+/// для поиска по подстроке в System.Speech, и в SAPI).
+pub fn short_voice_name(description: &str) -> String {
+    description.split(" - ").next().unwrap_or(description).trim().to_string()
+}
+
+pub fn parse_sapi_lists(text: &str) -> SapiLists {
+    let mut lists = SapiLists::default();
+    let mut section = 0;
+    for line in text.lines() {
+        let line = line.trim_start_matches('\u{feff}').trim();
+        match line {
+            "" => {}
+            "VOICES" => section = 1,
+            "OUTPUTS" => section = 2,
+            other => match section {
+                1 => lists.voices.push(short_voice_name(other)),
+                2 => lists.outputs.push(other.to_string()),
+                _ => {}
+            },
+        }
+    }
+    lists.voices.dedup();
+    lists
+}
+
+/// Запрашивает у Windows список голосов и устройств воспроизведения (1–2 секунды).
+pub fn list_sapi() -> Result<SapiLists, String> {
+    let script = r#"[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$v = New-Object -ComObject SAPI.SpVoice
+'VOICES'
+$v.GetVoices() | ForEach-Object { $_.GetDescription() }
+'OUTPUTS'
+$v.GetAudioOutputs() | ForEach-Object { $_.GetDescription() }
+"#;
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &encode_command(script)]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let out = cmd
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| format!("не удалось запустить PowerShell: {e}"))?;
+    Ok(parse_sapi_lists(&String::from_utf8_lossy(&out.stdout)))
+}
+
 /// Скрипт -> значение параметра -EncodedCommand (base64 от UTF-16LE).
 pub fn encode_command(script: &str) -> String {
     let bytes: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
@@ -311,5 +414,32 @@ mod tests {
         let mut sp = Speaker::with_command(fake("echo 'ready:x'; exit 0")).unwrap();
         std::thread::sleep(Duration::from_millis(100));
         assert!(sp.say("привет").is_err());
+    }
+
+    #[test]
+    fn sapi_script_selects_output_device_and_escapes() {
+        let cfg = TtsConfig {
+            voice: "Iri'na".into(),
+            output_device: "Динамики (Realtek)".into(),
+            rate: -3,
+            ..TtsConfig::default()
+        };
+        let s = powershell_script_sapi(&cfg);
+        assert!(s.contains("SAPI.SpVoice"));
+        assert!(s.contains("$wanted = 'Iri''na'"));
+        assert!(s.contains("$out = 'Динамики (Realtek)'"));
+        assert!(s.contains("$v.AudioOutput = $o"));
+        assert!(s.contains("$v.Rate = -3"));
+    }
+
+    #[test]
+    fn sapi_lists_are_parsed() {
+        let text = "\u{feff}VOICES\r\nMicrosoft Irina Desktop - Russian\r\nMicrosoft David Desktop - English (United States)\r\nOUTPUTS\r\nДинамики (Realtek High Definition Audio)\r\nVoicemeeter Input (VB-Audio Voicemeeter VAIO)\r\n";
+        let l = parse_sapi_lists(text);
+        assert_eq!(l.voices, vec!["Microsoft Irina Desktop", "Microsoft David Desktop"]);
+        assert_eq!(l.outputs.len(), 2);
+        assert_eq!(l.outputs[0], "Динамики (Realtek High Definition Audio)");
+        assert_eq!(short_voice_name("Microsoft Irina Desktop - Russian"), "Microsoft Irina Desktop");
+        assert_eq!(parse_sapi_lists(""), SapiLists::default());
     }
 }

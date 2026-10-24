@@ -407,7 +407,9 @@ pub fn run(
         }
         None => {
             let (tx, rx) = mpsc::channel::<Vec<f32>>();
-            let capture = capture::start(audio, tx)?;
+            let capture = capture::start(audio, tx).map_err(|e| {
+                format!("{e}\nОткройте окно настроек и выберите устройство: vcm_listener.exe settings")
+            })?;
             let i = &capture.info;
             println!(
                 "Устройство: {} — {} Гц, {} кан., {}; в распознавание идёт {} Гц моно.",
