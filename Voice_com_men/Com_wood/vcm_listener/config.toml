@@ -18,7 +18,8 @@ tokens = "sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16\\tokens.
 
 [audio]
 # Часть имени устройства записи, регистр не важен. Пусто = устройство по умолчанию
-device = "UR28M"
+# device = "UR28M"
+device = "Микрофон (Устройство с поддержкой High Definition Audio)"
 # "auto" — взять более громкий канал, "left", "right" или "mix"
 channel = "auto"
 # Усиление в дБ после выбора канала (для линейного входа обычно 0…+20)
