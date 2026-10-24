@@ -1,14 +1,17 @@
 mod audio_config;
 mod capture;
+mod dialog;
 mod dsp;
 mod engines;
 mod history;
 mod listen;
 mod sql_pool;
+mod tts;
 mod voting;
 
 use audio_config::{AudioConfig, VadConfig, VotingConfig};
 use sql_pool::SqlConfig;
+use tts::TtsConfig;
 use serde::Deserialize;
 use sherpa_onnx::{
     OfflineRecognizer, OfflineRecognizerConfig, OnlineRecognizer, OnlineRecognizerConfig, Wave,
@@ -37,6 +40,8 @@ struct Config {
     vad: VadConfig,
     #[serde(default)]
     sql: SqlConfig,
+    #[serde(default)]
+    tts: TtsConfig,
 }
 
 #[derive(Deserialize)]
@@ -94,6 +99,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             &config.vad,
             &config.voting,
             &config.sql,
+            &config.tts,
             wav.as_deref(),
         );
     }

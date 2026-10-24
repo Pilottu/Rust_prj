@@ -10,11 +10,15 @@ use std::error::Error;
 use std::io::Write;
 use std::path::Path;
 use std::sync::{mpsc, Arc};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use sherpa_onnx::{SileroVadModelConfig, VadModelConfig, VoiceActivityDetector, Wave};
 
 use crate::audio_config::{AudioConfig, VadConfig, VotingConfig};
 use crate::capture;
+use crate::dialog::{classify, followup_views, prompt_for, Dialog, EngineView, Outcome};
+use crate::tts::{Speaker, TtsConfig};
 use crate::dsp::Resampler;
 use crate::engines::{EngineBank, EnginePaths};
 use crate::history::History;
@@ -37,6 +41,12 @@ struct Pipeline {
     post_roll: usize,
     index: CommandIndex,
     reference: HashMap<String, String>,
+    speaker: Speaker,
+    dialog: Dialog,
+    confirm: bool,
+    answer_window: Duration,
+    echo_guard: bool,
+    speaker_error_shown: bool,
 }
 
 fn create_vad(model: &str, cfg: &VadConfig) -> Result<VoiceActivityDetector, Box<dyn Error>> {
@@ -69,36 +79,83 @@ impl Pipeline {
             .unwrap_or_else(|| format!("команда {cmd_key}"))
     }
 
-    /// Разбор текста одного движка: что он «услышал» как команду.
-    fn interpret(&self, text: &str) -> (Option<Interpretation>, String) {
+    /// Что движок «услышал» как команду (пустой текст — ничего).
+    fn match_of(&self, text: &str) -> Match {
         if text.trim().is_empty() {
-            return (None, String::new());
+            Match::None
+        } else {
+            self.index.lookup(&speech_form(text))
         }
-        match self.index.lookup(&speech_form(text)) {
+    }
+
+    /// Результат движка для голосования.
+    fn interp_of(m: &Match) -> Option<Interpretation> {
+        match m {
             Match::Exact { cmd_key, number } => {
-                let note = match number {
-                    Some(n) => format!("→ {} [{}]", self.reference_of(&cmd_key), n),
-                    None => format!("→ {}", self.reference_of(&cmd_key)),
-                };
-                (Some(Interpretation { cmd_key, number }), note)
+                Some(Interpretation { cmd_key: cmd_key.clone(), number: *number })
             }
             Match::NeedNumber { cmd_key } => {
-                let note = format!("→ {} (число не услышано)", self.reference_of(&cmd_key));
-                (Some(Interpretation { cmd_key, number: None }), note)
+                Some(Interpretation { cmd_key: cmd_key.clone(), number: None })
             }
-            Match::OutOfRange { cmd_key, number, slot } => (
-                None,
-                format!(
-                    "→ {}: число {} вне диапазона {}–{}",
-                    self.reference_of(&cmd_key),
-                    number,
-                    slot.min,
-                    slot.max
-                ),
-            ),
-            Match::Ambiguous(keys) => (None, format!("→ неоднозначно ({} команд)", keys.len())),
-            Match::None => (None, "→ такой команды нет".to_string()),
+            _ => None,
         }
+    }
+
+    /// Пояснение для строки движка на экране.
+    fn describe(&self, m: &Match) -> String {
+        match m {
+            Match::Exact { cmd_key, number: Some(n) } => {
+                format!("→ {} [{}]", self.reference_of(cmd_key), n)
+            }
+            Match::Exact { cmd_key, number: None } => format!("→ {}", self.reference_of(cmd_key)),
+            Match::NeedNumber { cmd_key } => {
+                format!("→ {} (число не услышано)", self.reference_of(cmd_key))
+            }
+            Match::OutOfRange { cmd_key, number, slot } => format!(
+                "→ {}: число {} вне диапазона {}–{}",
+                self.reference_of(cmd_key),
+                number,
+                slot.min,
+                slot.max
+            ),
+            Match::Ambiguous(keys) => format!("→ неоднозначно ({} команд)", keys.len()),
+            Match::None => "→ такой команды нет".to_string(),
+        }
+    }
+
+    /// Реакция голосом и состояние диалога.
+    fn react(&mut self, outcome: Outcome) {
+        let now = Instant::now();
+        match &outcome {
+            Outcome::AskNumber { cmd_key, slot } | Outcome::OutOfRange { cmd_key, slot } => {
+                self.dialog.ask(cmd_key.clone(), *slot, now, self.answer_window)
+            }
+            Outcome::Accepted { .. } | Outcome::NotACommand => self.dialog.clear(),
+            Outcome::Unclear | Outcome::Silence => {}
+        }
+        if let Some(text) = prompt_for(&outcome, self.confirm) {
+            if self.speaker.is_enabled() {
+                println!("  Голос: «{text}»");
+                self.say(&text);
+            } else {
+                println!("  (озвучка выключена) Сказал бы: «{text}»");
+            }
+        }
+    }
+
+    /// Произнести фразу; после речи надо отбросить звук микрофона (эхо колонок).
+    fn say(&mut self, text: &str) {
+        if let Err(e) = self.speaker.say(text) {
+            if !self.speaker_error_shown {
+                println!("  (синтезатор: {e})");
+                self.speaker_error_shown = true;
+            }
+        }
+        self.echo_guard = true;
+    }
+
+    fn take_echo_guard(&mut self) -> bool {
+        std::mem::take(&mut self.echo_guard)
     }
 
     fn feed(&mut self, chunk: &[f32]) {
@@ -158,20 +215,39 @@ impl Pipeline {
 
         let texts = self.bank.recognize(Arc::new(padded));
 
-        let parsed: Vec<(Option<Interpretation>, String)> =
-            texts.iter().map(|t| self.interpret(&t.text)).collect();
+        // Ждём ли мы число в ответ на прошлый вопрос?
+        let pending = self.dialog.active(Instant::now());
+        let text_refs: Vec<&str> = texts.iter().map(|t| t.text.as_str()).collect();
+        let followup = pending.as_ref().and_then(|p| followup_views(&text_refs, p));
+        let answering = followup.is_some();
+        let matches: Vec<Match> = match &followup {
+            Some(v) => v.iter().map(|x| x.matched.clone()).collect(),
+            None => texts.iter().map(|t| self.match_of(&t.text)).collect(),
+        };
+        let parsed: Vec<(Option<Interpretation>, String)> = matches
+            .iter()
+            .map(|m| (Self::interp_of(m), self.describe(m)))
+            .collect();
+        let views: Vec<EngineView> = texts
+            .iter()
+            .zip(&matches)
+            .map(|(t, m)| EngineView { has_text: !t.text.trim().is_empty(), matched: m.clone() })
+            .collect();
 
         println!(
             "\n[#{}] фраза {:.1} с (контекст: {:.2} с до, {:.2} с после)",
             self.counter, seconds, pre_s, post_s
         );
+        if answering {
+            println!("  (ответ на вопрос: ждали число)");
+        }
         for (t, (_, note)) in texts.iter().zip(&parsed) {
             println!(
                 "  {:<7} {:>5.2} с  {}  {}",
                 t.engine,
                 t.elapsed.as_secs_f64(),
                 if t.text.is_empty() { "—" } else { t.text.as_str() },
-                note
+                if t.text.trim().is_empty() { "" } else { note.as_str() }
             );
         }
 
@@ -181,7 +257,8 @@ impl Pipeline {
             .map(|(t, (interp, _))| EngineVote { engine: t.engine, interpretation: interp.clone() })
             .collect();
 
-        match vote(&votes, self.min_agree) {
+        let verdict = vote(&votes, self.min_agree);
+        match verdict.clone() {
             Verdict::Accepted { interpretation, agreed, dissent } => {
                 let against = if dissent.is_empty() {
                     String::new()
@@ -218,6 +295,10 @@ impl Pipeline {
             Verdict::NoAgreement => println!("  Голосование: НЕТ СОГЛАСИЯ — переспросить"),
             Verdict::NothingRecognized => println!("  Голосование: ничего не распознано"),
         }
+
+        let slot_lookup = |key: &str| self.index.slot(key);
+        let outcome = classify(&verdict, &views, &slot_lookup);
+        self.react(outcome);
     }
 }
 
@@ -260,6 +341,7 @@ pub fn run(
     vad_cfg: &VadConfig,
     voting: &VotingConfig,
     sql: &SqlConfig,
+    tts: &TtsConfig,
     wav: Option<&Path>,
 ) -> Result<(), Box<dyn Error>> {
     println!("Читаю пул команд из SQL Server ({} / {})...", sql.server, sql.database);
@@ -269,6 +351,21 @@ pub fn run(
     if pool.index.is_empty() {
         println!("ВНИМАНИЕ: пул пуст. Запустите основную программу, чтобы она записала пул, и перезапустите слушатель.");
     }
+
+    let speaker = match Speaker::start(tts) {
+        Ok(sp) => {
+            if sp.is_enabled() {
+                println!("Озвучка: голос «{}»", sp.voice_name());
+            } else {
+                println!("Озвучка выключена ([tts] enabled = false).");
+            }
+            sp
+        }
+        Err(e) => {
+            println!("Озвучка недоступна: {e}");
+            Speaker::disabled()
+        }
+    };
 
     println!("Загружаю модели (три распознавателя и детектор речи)...");
     let bank = EngineBank::start(paths)?;
@@ -283,6 +380,12 @@ pub fn run(
         post_roll: (vad_cfg.post_roll_s.max(0.0) * SAMPLE_RATE as f32) as usize,
         index: pool.index,
         reference: pool.reference,
+        speaker,
+        dialog: Dialog::new(),
+        confirm: tts.confirm,
+        answer_window: Duration::from_secs_f32(tts.answer_window_s.max(1.0)),
+        echo_guard: false,
+        speaker_error_shown: false,
     };
 
     match wav {
@@ -310,11 +413,23 @@ pub fn run(
                 "Устройство: {} — {} Гц, {} кан., {}; в распознавание идёт {} Гц моно.",
                 i.device_name, i.device_rate, i.channels, i.sample_format, i.target_rate
             );
+            let echo_tail = Duration::from_secs_f32(tts.echo_tail_s.max(0.0));
+            if pipeline.speaker.is_enabled() && !tts.greeting.trim().is_empty() {
+                pipeline.say(&tts.greeting);
+                pipeline.take_echo_guard();
+                thread::sleep(echo_tail);
+                while rx.try_recv().is_ok() {}
+            }
             println!("Говорите. Выход — Ctrl+C.");
             let mut meter = Meter::new();
-            for chunk in rx {
+            while let Ok(chunk) = rx.recv() {
                 meter.update(&chunk);
                 pipeline.feed(&chunk);
+                if pipeline.take_echo_guard() {
+                    // пока говорил синтезатор, микрофон слышал колонки: отбрасываем накопленное
+                    thread::sleep(echo_tail);
+                    while rx.try_recv().is_ok() {}
+                }
             }
             Ok(())
         }
