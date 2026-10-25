@@ -1,0 +1,371 @@
+// Окно настроек слушателя голосовых команд. Значения полей — строки: пользователь правит
+// текст, а разбор и проверка диапазонов делает Rust (settings.rs).
+import { Button, CheckBox, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+
+// Строка формы: подпись слева, элемент и необязательная подсказка справа.
+component Row inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> hint;
+    spacing: 12px;
+    Text {
+        text: root.label;
+        width: 230px;
+        vertical-alignment: top;
+        wrap: word-wrap;
+    }
+    VerticalLayout {
+        spacing: 2px;
+        @children
+        if root.hint != "": Text {
+            text: root.hint;
+            color: #7a7a7a;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// Раздел с заголовком и линией.
+component Section inherits VerticalLayout {
+    in property <string> title;
+    spacing: 6px;
+    Text {
+        text: root.title;
+        font-size: 15px;
+        font-weight: 700;
+    }
+    Rectangle {
+        height: 1px;
+        background: #b8b8b8;
+    }
+    @children
+}
+
+export component SettingsWindow inherits Window {
+    title: "Настройки слушателя команд";
+    preferred-width: 900px;
+    preferred-height: 760px;
+    min-width: 640px;
+    min-height: 480px;
+
+    // --- значения полей ----------------------------------------------------
+    in-out property <string> models-dir;
+    in-out property <string> audio-device;
+    in-out property <string> audio-channel;
+    in-out property <string> audio-gain-db;
+    in-out property <string> audio-buffer-frames;
+    in-out property <string> vad-threshold;
+    in-out property <string> vad-min-silence;
+    in-out property <string> vad-min-speech;
+    in-out property <string> vad-max-speech;
+    in-out property <string> vad-pre-roll;
+    in-out property <string> vad-post-roll;
+    in-out property <string> voting-min-agree;
+    in-out property <bool> tts-enabled;
+    in-out property <string> tts-voice;
+    in-out property <string> tts-output-device;
+    in-out property <string> tts-rate;
+    in-out property <string> tts-volume;
+    in-out property <bool> tts-confirm;
+    in-out property <string> tts-greeting;
+    in-out property <string> tts-answer-window;
+    in-out property <string> tts-echo-tail;
+    in-out property <string> sql-server;
+    in-out property <string> sql-database;
+    in-out property <string> sql-driver;
+    in-out property <bool> sql-trusted;
+
+    // --- списки выбора ---------------------------------------------------------
+    in property <[string]> input-devices;
+    in property <[string]> channels;
+    in property <[string]> voices;
+    in property <[string]> outputs;
+
+    // --- состояние -------------------------------------------------------------
+    in property <string> status;
+    in property <bool> status-ok;
+    in property <bool> busy;
+
+    callback save();
+    callback test-mic();
+    callback test-voice();
+    callback close-window();
+
+    VerticalLayout {
+        ScrollView {
+            VerticalLayout {
+                padding: 16px;
+                spacing: 14px;
+
+                Section {
+                    title: "Звук с микрофона";
+                    Row {
+                        label: "Устройство записи";
+                        hint: "Откуда слушать команды.";
+                        ComboBox {
+                            model: root.input-devices;
+                            current-value <=> root.audio-device;
+                        }
+                    }
+                    Row {
+                        label: "Канал";
+                        hint: "Если микрофон подключён к одному гнезду, auto сам возьмёт нужный.";
+                        ComboBox {
+                            model: root.channels;
+                            current-value <=> root.audio-channel;
+                        }
+                    }
+                    Row {
+                        label: "Усиление, дБ";
+                        hint: "Для линейного входа обычно 0…+20. Речь должна давать −30…−20 dBFS.";
+                        LineEdit {
+                            text <=> root.audio-gain-db;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Буфер, кадров";
+                        hint: "0 — по умолчанию. При «пропусках звука» попробуйте 2048 или 4096.";
+                        LineEdit {
+                            text <=> root.audio-buffer-frames;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                }
+
+                Section {
+                    title: "Детектор речи";
+                    Row {
+                        label: "Порог";
+                        hint: "0.05–0.99. Меньше — чувствительнее (ловит тихое начало фразы).";
+                        LineEdit {
+                            text <=> root.vad-threshold;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Тишина в конце фразы, с";
+                        hint: "Сколько тишины считать концом фразы.";
+                        LineEdit {
+                            text <=> root.vad-min-silence;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Минимальная фраза, с";
+                        hint: "Короче — отбрасывается как щелчок.";
+                        LineEdit {
+                            text <=> root.vad-min-speech;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Максимальная фраза, с";
+                        hint: "Длиннее — режется принудительно.";
+                        LineEdit {
+                            text <=> root.vad-max-speech;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Звук до фразы, с";
+                        hint: "Берётся реальный звук перед фразой (детектор начинает с опозданием).";
+                        LineEdit {
+                            text <=> root.vad-pre-roll;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Звук после фразы, с";
+                        hint: "То же после фразы.";
+                        LineEdit {
+                            text <=> root.vad-post-roll;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Согласных движков";
+                        hint: "Сколько из трёх должны дать одинаковый разбор (обычно 2).";
+                        LineEdit {
+                            text <=> root.voting-min-agree;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                }
+
+                Section {
+                    title: "Голос";
+                    Row {
+                        label: "Озвучка";
+                        hint: "Включить голосовые подсказки.";
+                        CheckBox {
+                            text: "включена";
+                            checked <=> root.tts-enabled;
+                        }
+                    }
+                    Row {
+                        label: "Голос";
+                        hint: "Русский голос Windows.";
+                        ComboBox {
+                            model: root.voices;
+                            current-value <=> root.tts-voice;
+                        }
+                    }
+                    Row {
+                        label: "Устройство воспроизведения";
+                        hint: "Куда говорить: колонки, наушники.";
+                        ComboBox {
+                            model: root.outputs;
+                            current-value <=> root.tts-output-device;
+                        }
+                    }
+                    Row {
+                        label: "Скорость речи";
+                        hint: "От −10 до 10.";
+                        LineEdit {
+                            text <=> root.tts-rate;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Громкость голоса";
+                        hint: "От 0 до 100.";
+                        LineEdit {
+                            text <=> root.tts-volume;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Говорить «Принято.»";
+                        hint: "После каждой выполненной команды.";
+                        CheckBox {
+                            text: "говорить";
+                            checked <=> root.tts-confirm;
+                        }
+                    }
+                    Row {
+                        label: "Фраза при запуске";
+                        hint: "Пусто — молчать.";
+                        LineEdit {
+                            text <=> root.tts-greeting;
+                        }
+                    }
+                    Row {
+                        label: "Ждать ответ-число, с";
+                        hint: "После вопроса «Какое значение?».";
+                        LineEdit {
+                            text <=> root.tts-answer-window;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Пауза после речи, с";
+                        hint: "Столько микрофон не слушает после голоса (эхо колонок).";
+                        LineEdit {
+                            text <=> root.tts-echo-tail;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                }
+
+                Section {
+                    title: "Модели и база данных";
+                    Row {
+                        label: "Папка с моделями";
+                        hint: "Где лежат модели распознавания.";
+                        LineEdit {
+                            text <=> root.models-dir;
+                        }
+                    }
+                    Row {
+                        label: "Сервер SQL";
+                        hint: "Например localhost\\TEW_SQLEXPRESS.";
+                        LineEdit {
+                            text <=> root.sql-server;
+                        }
+                    }
+                    Row {
+                        label: "База данных";
+                        LineEdit {
+                            text <=> root.sql-database;
+                        }
+                    }
+                    Row {
+                        label: "Драйвер ODBC";
+                        LineEdit {
+                            text <=> root.sql-driver;
+                        }
+                    }
+                    Row {
+                        label: "Вход Windows";
+                        hint: "Включено — вход под текущим пользователем Windows.";
+                        CheckBox {
+                            text: "доверенное подключение";
+                            checked <=> root.sql-trusted;
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: #b8b8b8;
+        }
+        VerticalLayout {
+            padding: 10px;
+            spacing: 8px;
+            Text {
+                text: root.status;
+                color: root.status-ok ? #1b7a1b : #b00020;
+                wrap: word-wrap;
+                visible: root.status != "";
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Button {
+                    text: "Сохранить";
+                    primary: true;
+                    enabled: !root.busy;
+                    clicked => {
+                        root.save();
+                    }
+                }
+                Button {
+                    text: "Проверить микрофон (2 с)";
+                    enabled: !root.busy;
+                    clicked => {
+                        root.test-mic();
+                    }
+                }
+                Button {
+                    text: "Проверить голос";
+                    enabled: !root.busy;
+                    clicked => {
+                        root.test-voice();
+                    }
+                }
+                Rectangle { }
+                Button {
+                    text: "Закрыть";
+                    clicked => {
+                        root.close-window();
+                    }
+                }
+            }
+        }
+    }
+}

@@ -7,6 +7,7 @@ mod engines;
 mod history;
 mod listen;
 mod settings;
+mod settings_ui;
 mod sql_pool;
 mod tts;
 mod voting;
@@ -74,11 +75,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if args.first().map(String::as_str) == Some("settings") {
-        let port = match args.get(1).map(String::as_str) {
-            Some("--port") => args.get(2).and_then(|p| p.parse().ok()).unwrap_or(8765),
-            _ => 8765,
-        };
-        return settings::run(port, &settings::config_path());
+        return settings_ui::run(&settings::config_path());
     }
 
     let config_text = fs::read_to_string(settings::config_path())?;

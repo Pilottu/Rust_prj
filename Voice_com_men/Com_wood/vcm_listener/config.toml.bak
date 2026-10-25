@@ -1,0 +1,47 @@
+models_dir = "E:\\Prog\\rust_prj\\Voice_com_men\\Com_wood\\models"
+test_wav = "sherpa-onnx-nemo-ctc-giga-am-v2-russian-2025-04-19\\test_wavs\\example.wav"
+silero_vad = "silero_vad.onnx"
+
+[gigaam]
+model = "sherpa-onnx-nemo-ctc-giga-am-v2-russian-2025-04-19\\model.int8.onnx"
+tokens = "sherpa-onnx-nemo-ctc-giga-am-v2-russian-2025-04-19\\tokens.txt"
+
+[t_one]
+model = "sherpa-onnx-streaming-t-one-russian-2025-09-08\\model.onnx"
+tokens = "sherpa-onnx-streaming-t-one-russian-2025-09-08\\tokens.txt"
+
+[vosk]
+encoder = "sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16\\encoder.int8.onnx"
+decoder = "sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16\\decoder.onnx"
+joiner = "sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16\\joiner.int8.onnx"
+tokens = "sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16\\tokens.txt"
+
+[audio]
+# Часть имени устройства записи, регистр не важен. Пусто = устройство по умолчанию
+# device = "UR28M"
+device = "Микрофон (Устройство с поддержкой High Definition Audio)"
+# "auto" — взять более громкий канал, "left", "right" или "mix"
+channel = "auto"
+# Усиление в дБ после выбора канала (для линейного входа обычно 0…+20)
+gain_db = 0.0
+# Частота для детектора речи и распознавателей
+target_sample_rate = 16000
+
+[voting]
+min_agree = 2
+
+[vad]
+threshold = 0.5
+min_silence_s = 0.5
+min_speech_s = 0.25
+max_speech_s = 8.0
+
+[tts]
+enabled = true
+voice = "Irina"
+rate = 0
+volume = 100
+confirm = false
+greeting = "Готов."
+answer_window_s = 8.0
+echo_tail_s = 0.4
