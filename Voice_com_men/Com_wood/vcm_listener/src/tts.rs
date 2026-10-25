@@ -8,19 +8,39 @@
 // Протокол: программа пишет строку с текстом, PowerShell произносит её и отвечает «done».
 // Это же позволяет знать, когда речь закончилась (нужно, чтобы не слушать самих себя).
 
+use std::collections::HashMap;
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
 
 use serde::Deserialize;
+use sherpa_onnx::{GenerationConfig, OfflineTts, OfflineTtsConfig, OfflineTtsModelConfig, OfflineTtsVitsModelConfig};
+
+use crate::playback;
 
 /// Секция [tts] файла config.toml.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct TtsConfig {
     pub enabled: bool,
+    /// "auto" — нейросетевой голос, если модель найдена, иначе голос Windows;
+    /// "neural" — только нейросетевой; "windows" — только встроенный голос Windows.
+    pub engine: String,
+    /// Папка модели нейросетевого голоса (Piper): в ней .onnx, tokens.txt и espeak-ng-data.
+    /// Относительный путь отсчитывается от папки с моделями.
+    pub model_dir: String,
+    /// Номер голоса в модели (у русских моделей Piper он один — 0).
+    pub speaker_id: u32,
+    /// Скорость нейросетевого голоса: 1.0 — обычная, больше — быстрее.
+    pub speed: f32,
+    /// Говорить «Такой команды нет.» (в шумной комнате лучше выключить).
+    pub say_not_a_command: bool,
+    /// Говорить «Не понял. Повторите, пожалуйста.».
+    pub say_unclear: bool,
     /// Часть имени голоса. Пусто или не найдено — первый русский голос.
     pub voice: String,
     /// Часть имени устройства воспроизведения (колонки, наушники). Пусто — по умолчанию в Windows.
@@ -43,6 +63,12 @@ impl Default for TtsConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            engine: "auto".to_string(),
+            model_dir: "vits-piper-ru_RU-irina-medium".to_string(),
+            speaker_id: 0,
+            speed: 1.0,
+            say_not_a_command: false,
+            say_unclear: true,
             voice: "Irina".to_string(),
             output_device: String::new(),
             rate: 0,
@@ -62,6 +88,102 @@ enum Backend {
         stdin: ChildStdin,
         replies: Receiver<String>,
     },
+    Neural(Neural),
+}
+
+/// Нейросетевой голос: sherpa-onnx синтезирует, cpal проигрывает.
+struct Neural {
+    tts: OfflineTts,
+    /// Уже озвученные фразы (подсказки повторяются, второй раз они звучат мгновенно).
+    cache: HashMap<String, (Vec<f32>, u32)>,
+    output: String,
+    volume: f32,
+    sid: i32,
+    speed: f32,
+}
+
+impl Neural {
+    fn say(&mut self, text: &str) -> Result<(), String> {
+        let key = text.trim().to_string();
+        if key.is_empty() {
+            return Ok(());
+        }
+        if !self.cache.contains_key(&key) {
+            let gen = GenerationConfig { sid: self.sid, speed: self.speed, ..Default::default() };
+            let audio = self
+                .tts
+                .generate_with_config(&key, &gen, None::<fn(&[f32], f32) -> bool>)
+                .ok_or_else(|| "синтезатор не смог озвучить фразу".to_string())?;
+            let samples = audio.samples().to_vec();
+            let rate = audio.sample_rate() as u32;
+            if self.cache.len() >= 64 {
+                self.cache.clear();
+            }
+            self.cache.insert(key.clone(), (samples, rate));
+        }
+        let (samples, rate) = &self.cache[&key];
+        playback::play_blocking(&self.output, samples, *rate, self.volume)
+    }
+}
+
+/// Файлы нейросетевой модели голоса (формат Piper в сборке sherpa-onnx).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NeuralFiles {
+    pub model: PathBuf,
+    pub tokens: PathBuf,
+    pub data_dir: PathBuf,
+}
+
+/// Ищет в папке модель: первый .onnx, tokens.txt и папку espeak-ng-data.
+pub fn find_model(dir: &Path) -> Option<NeuralFiles> {
+    let tokens = dir.join("tokens.txt");
+    let data_dir = dir.join("espeak-ng-data");
+    if !tokens.is_file() || !data_dir.is_dir() {
+        return None;
+    }
+    let mut onnx: Vec<PathBuf> = fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().map(|e| e == "onnx").unwrap_or(false))
+        .collect();
+    onnx.sort();
+    Some(NeuralFiles { model: onnx.into_iter().next()?, tokens, data_dir })
+}
+
+/// Имена подпапок папки с моделями, в которых лежит голосовая модель.
+pub fn list_models(models_dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(models_dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.path().is_dir() && find_model(&e.path()).is_some())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    Neural,
+    Windows,
+}
+
+/// Какой голос использовать по настройке и наличию модели.
+pub fn choose_engine(setting: &str, model_found: bool) -> Engine {
+    match setting.trim().to_lowercase().as_str() {
+        "windows" => Engine::Windows,
+        "neural" => Engine::Neural,
+        _ => {
+            if model_found {
+                Engine::Neural
+            } else {
+                Engine::Windows
+            }
+        }
+    }
 }
 
 pub struct Speaker {
@@ -87,11 +209,65 @@ impl Speaker {
         &self.voice_name
     }
 
-    /// Запускает синтезатор Windows. При `enabled = false` возвращает «немого» диктора.
+    /// Запускает голос по настройкам. При `enabled = false` возвращает «немого» диктора.
     pub fn start(cfg: &TtsConfig) -> Result<Self, String> {
         if !cfg.enabled {
             return Ok(Self::disabled());
         }
+        let found = find_model(Path::new(&cfg.model_dir));
+        match choose_engine(&cfg.engine, found.is_some()) {
+            Engine::Neural => Self::start_neural(cfg, found),
+            Engine::Windows => Self::start_windows(cfg).map_err(|e| {
+                if cfg.engine.trim().eq_ignore_ascii_case("windows") {
+                    e
+                } else {
+                    format!("{e}; нейросетевая модель голоса тоже не найдена в «{}»", cfg.model_dir)
+                }
+            }),
+        }
+    }
+
+    fn start_neural(cfg: &TtsConfig, found: Option<NeuralFiles>) -> Result<Self, String> {
+        let files = found.ok_or_else(|| {
+            format!(
+                "не найдена модель голоса в «{}» (нужны файл .onnx, tokens.txt и папка espeak-ng-data)",
+                cfg.model_dir
+            )
+        })?;
+        let config = OfflineTtsConfig {
+            model: OfflineTtsModelConfig {
+                vits: OfflineTtsVitsModelConfig {
+                    model: Some(files.model.to_string_lossy().into_owned()),
+                    tokens: Some(files.tokens.to_string_lossy().into_owned()),
+                    data_dir: Some(files.data_dir.to_string_lossy().into_owned()),
+                    ..Default::default()
+                },
+                num_threads: 2,
+                debug: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let tts = OfflineTts::create(&config)
+            .ok_or_else(|| format!("не удалось загрузить модель голоса из «{}»", cfg.model_dir))?;
+        let name = Path::new(&cfg.model_dir)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| cfg.model_dir.clone());
+        Ok(Self {
+            backend: Backend::Neural(Neural {
+                tts,
+                cache: HashMap::new(),
+                output: cfg.output_device.trim().to_string(),
+                volume: cfg.volume.min(100) as f32 / 100.0,
+                sid: cfg.speaker_id as i32,
+                speed: cfg.speed.clamp(0.3, 3.0),
+            }),
+            voice_name: name,
+        })
+    }
+
+    fn start_windows(cfg: &TtsConfig) -> Result<Self, String> {
         let script = if cfg.output_device.trim().is_empty() {
             powershell_script(cfg)
         } else {
@@ -157,8 +333,10 @@ impl Speaker {
 
     /// Произносит фразу и возвращается, когда она закончилась.
     pub fn say(&mut self, text: &str) -> Result<(), String> {
-        let Backend::Process { stdin, replies, .. } = &mut self.backend else {
-            return Ok(());
+        let (stdin, replies) = match &mut self.backend {
+            Backend::Disabled => return Ok(()),
+            Backend::Neural(n) => return n.say(text),
+            Backend::Process { stdin, replies, .. } => (stdin, replies),
         };
         let line: String = text.chars().map(|c| if c == '\r' || c == '\n' { ' ' } else { c }).collect();
         writeln!(stdin, "{line}")
@@ -441,5 +619,101 @@ mod tests {
         assert_eq!(l.outputs[0], "Динамики (Realtek High Definition Audio)");
         assert_eq!(short_voice_name("Microsoft Irina Desktop - Russian"), "Microsoft Irina Desktop");
         assert_eq!(parse_sapi_lists(""), SapiLists::default());
+    }
+
+    // --- нейросетевой голос: поиск модели и выбор движка -----------------------------------
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("vcm_tts_test_{}_{}", std::process::id(), name));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn make_voice(dir: &Path, onnx: &[&str]) {
+        fs::create_dir_all(dir.join("espeak-ng-data")).unwrap();
+        fs::write(dir.join("tokens.txt"), "a 1").unwrap();
+        for f in onnx {
+            fs::write(dir.join(f), "x").unwrap();
+        }
+    }
+
+    #[test]
+    fn model_is_found_by_its_three_parts() {
+        let d = temp_dir("find");
+        make_voice(&d, &["ru_RU-irina-medium.onnx", "ru_RU-irina-medium.onnx.json"]);
+        let f = find_model(&d).unwrap();
+        assert!(f.model.ends_with("ru_RU-irina-medium.onnx"));
+        assert!(f.tokens.ends_with("tokens.txt"));
+        assert!(f.data_dir.ends_with("espeak-ng-data"));
+    }
+
+    #[test]
+    fn incomplete_model_folders_are_rejected() {
+        let no_espeak = temp_dir("noespeak");
+        fs::write(no_espeak.join("tokens.txt"), "a").unwrap();
+        fs::write(no_espeak.join("m.onnx"), "x").unwrap();
+        assert!(find_model(&no_espeak).is_none());
+        let no_onnx = temp_dir("noonnx");
+        make_voice(&no_onnx, &[]);
+        assert!(find_model(&no_onnx).is_none());
+        let only_json = temp_dir("onlyjson");
+        make_voice(&only_json, &["m.onnx.json"]);
+        assert!(find_model(&only_json).is_none());
+        assert!(find_model(Path::new("/нет/такой/папки")).is_none());
+    }
+
+    #[test]
+    fn models_dir_listing_finds_voices_but_not_recognition_models() {
+        let base = temp_dir("list");
+        make_voice(&base.join("vits-piper-ru_RU-irina-medium"), &["a.onnx"]);
+        make_voice(&base.join("vits-piper-ru_RU-denis-medium"), &["b.onnx"]);
+        // модель распознавания: есть tokens.txt и .onnx, но нет espeak-ng-data
+        let asr = base.join("sherpa-onnx-nemo-ctc-giga-am");
+        fs::create_dir_all(&asr).unwrap();
+        fs::write(asr.join("tokens.txt"), "a").unwrap();
+        fs::write(asr.join("model.int8.onnx"), "x").unwrap();
+        assert_eq!(
+            list_models(&base),
+            vec!["vits-piper-ru_RU-denis-medium", "vits-piper-ru_RU-irina-medium"]
+        );
+        assert!(list_models(Path::new("/нет/такой/папки")).is_empty());
+    }
+
+    #[test]
+    fn engine_choice_follows_the_setting_and_model_presence() {
+        assert_eq!(choose_engine("auto", true), Engine::Neural);
+        assert_eq!(choose_engine("auto", false), Engine::Windows);
+        assert_eq!(choose_engine("neural", false), Engine::Neural);
+        assert_eq!(choose_engine("windows", true), Engine::Windows);
+        assert_eq!(choose_engine("WINDOWS ", true), Engine::Windows);
+        assert_eq!(choose_engine("что-то непонятное", true), Engine::Neural);
+    }
+
+    #[test]
+    fn defaults_keep_the_room_quiet() {
+        let c = TtsConfig::default();
+        assert_eq!(c.engine, "auto");
+        assert!(!c.say_not_a_command, "на болтовню отвечать не должен");
+        assert!(c.say_unclear);
+        assert_eq!(c.model_dir, "vits-piper-ru_RU-irina-medium");
+        assert_eq!(c.speaker_id, 0);
+        assert_eq!(c.speed, 1.0);
+    }
+
+    #[test]
+    fn neural_voice_without_a_model_explains_what_is_missing() {
+        let cfg = TtsConfig { engine: "neural".into(), model_dir: "/нет/модели".into(), ..TtsConfig::default() };
+        let err = Speaker::start(&cfg).err().unwrap();
+        assert!(err.contains("не найдена модель голоса"), "{err}");
+        assert!(err.contains("espeak-ng-data"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auto_without_model_and_without_windows_voice_mentions_both() {
+        let cfg = TtsConfig { engine: "auto".into(), model_dir: "/нет/модели".into(), ..TtsConfig::default() };
+        let err = Speaker::start(&cfg).err().unwrap();
+        assert!(err.contains("нейросетевая модель голоса тоже не найдена"), "{err}");
     }
 }

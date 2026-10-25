@@ -19,13 +19,14 @@ tokens = "sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16\\tokens.
 [audio]
 # Часть имени устройства записи, регистр не важен. Пусто = устройство по умолчанию
 # device = "UR28M"
-device = "Микрофон (Устройство с поддержкой High Definition Audio)"
+device = "Line (2- Steinberg UR28M)"
 # "auto" — взять более громкий канал, "left", "right" или "mix"
 channel = "auto"
 # Усиление в дБ после выбора канала (для линейного входа обычно 0…+20)
 gain_db = 0.0
 # Частота для детектора речи и распознавателей
 target_sample_rate = 16000
+buffer_frames = 0
 
 [voting]
 min_agree = 2
@@ -35,13 +36,28 @@ threshold = 0.5
 min_silence_s = 0.5
 min_speech_s = 0.25
 max_speech_s = 8.0
+pre_roll_s = 0.30000001192092896
+post_roll_s = 0.20000000298023224
 
 [tts]
 enabled = true
-voice = "Irina"
+voice = ""
 rate = 0
 volume = 100
 confirm = false
 greeting = "Готов."
 answer_window_s = 8.0
-echo_tail_s = 0.4
+echo_tail_s = 0.4000000059604645
+output_device = "Voicemeeter Input (VB-Audio Voicemeeter VAIO)"
+engine = "auto"
+model_dir = "vits-piper-ru_RU-irina-medium"
+speaker_id = 0
+speed = 1.0
+say_not_a_command = false
+say_unclear = true
+
+[sql]
+server = "localhost\\TEW_SQLEXPRESS"
+database = "vcm_state"
+driver = "ODBC Driver 17 for SQL Server"
+trusted_connection = true

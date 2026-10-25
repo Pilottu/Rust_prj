@@ -6,6 +6,7 @@ mod dsp;
 mod engines;
 mod history;
 mod listen;
+mod playback;
 mod settings;
 mod settings_ui;
 mod sql_pool;
@@ -93,6 +94,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             vosk_tokens: resolve(&config.models_dir, &config.vosk.tokens),
         };
         let vad_model = resolve(&config.models_dir, &config.silero_vad);
+        let mut tts = config.tts.clone();
+        tts.model_dir = resolve(&config.models_dir, &tts.model_dir);
         let wav = if args.get(1).map(String::as_str) == Some("--wav") {
             args.get(2).map(PathBuf::from)
         } else {
@@ -105,7 +108,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             &config.vad,
             &config.voting,
             &config.sql,
-            &config.tts,
+            &tts,
             wav.as_deref(),
         );
     }

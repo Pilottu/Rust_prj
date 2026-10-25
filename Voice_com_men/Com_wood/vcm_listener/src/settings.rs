@@ -12,6 +12,7 @@ use serde::Deserialize;
 
 use crate::audio_config::{AudioConfig, ChannelMode, VadConfig, VotingConfig};
 use crate::capture::{self, InputDeviceInfo};
+use crate::playback::{self, OutputDeviceInfo};
 use crate::config_edit::{set_value, toml_float, toml_string};
 use crate::sql_pool::SqlConfig;
 use crate::tts::{self, SapiLists, TtsConfig};
@@ -44,19 +45,29 @@ pub struct ConfigView {
 #[derive(Debug, Default, Clone)]
 pub struct Devices {
     pub inputs: Vec<InputDeviceInfo>,
+    /// Устройства воспроизведения (колонки, наушники): для обоих голосов.
+    pub outputs: Vec<OutputDeviceInfo>,
+    /// Голоса Windows (нужны только если выбран голос Windows).
     pub sapi: SapiLists,
+    /// Найденные папки с нейросетевыми голосами внутри папки моделей.
+    pub models: Vec<String>,
     pub notes: Vec<String>,
 }
 
-pub fn gather_devices() -> Devices {
+pub fn gather_devices(models_dir: &str) -> Devices {
     let mut d = Devices::default();
+    d.models = tts::list_models(Path::new(models_dir));
+    match playback::list_output_devices() {
+        Ok(list) => d.outputs = list,
+        Err(e) => d.notes.push(format!("Устройства воспроизведения: {e}")),
+    }
     match capture::list_input_devices() {
         Ok(list) => d.inputs = list,
         Err(e) => d.notes.push(format!("Устройства записи: {e}")),
     }
     match tts::list_sapi() {
         Ok(l) => d.sapi = l,
-        Err(e) => d.notes.push(format!("Голоса и устройства воспроизведения: {e}")),
+        Err(e) => d.notes.push(format!("Голоса Windows: {e}")),
     }
     d
 }
@@ -136,6 +147,15 @@ pub fn read_form(form: &HashMap<String, String>) -> Result<ConfigView, String> {
         },
         tts: TtsConfig {
             enabled: flag(form, "tts.enabled"),
+            engine: match text(form, "tts.engine") {
+                e @ ("auto" | "neural" | "windows") => e.to_string(),
+                _ => return Err("Голос должен быть auto, neural или windows.".to_string()),
+            },
+            model_dir: text(form, "tts.model_dir").to_string(),
+            speaker_id: int(form, "tts.speaker_id", "Номер голоса в модели", 0, 1000)? as u32,
+            speed: float(form, "tts.speed", "Скорость нейросетевого голоса", 0.3, 3.0)?,
+            say_not_a_command: flag(form, "tts.say_not_a_command"),
+            say_unclear: flag(form, "tts.say_unclear"),
             voice: text(form, "tts.voice").to_string(),
             output_device: text(form, "tts.output_device").to_string(),
             rate: int(form, "tts.rate", "Скорость речи", -10, 10)? as i32,
@@ -170,6 +190,12 @@ pub fn apply(v: &ConfigView, old: &str) -> String {
     set("sql", "driver", toml_string(&v.sql.driver));
     set("sql", "trusted_connection", v.sql.trusted_connection.to_string());
     set("tts", "enabled", v.tts.enabled.to_string());
+    set("tts", "engine", toml_string(&v.tts.engine));
+    set("tts", "model_dir", toml_string(&v.tts.model_dir));
+    set("tts", "speaker_id", v.tts.speaker_id.to_string());
+    set("tts", "speed", toml_float(v.tts.speed as f64));
+    set("tts", "say_not_a_command", v.tts.say_not_a_command.to_string());
+    set("tts", "say_unclear", v.tts.say_unclear.to_string());
     set("tts", "voice", toml_string(&v.tts.voice));
     set("tts", "output_device", toml_string(&v.tts.output_device));
     set("tts", "rate", v.tts.rate.to_string());
@@ -273,6 +299,32 @@ pub fn input_items(devices: &Devices) -> Vec<(String, String)> {
         .collect()
 }
 
+pub fn output_items(devices: &Devices) -> Vec<(String, String)> {
+    devices
+        .outputs
+        .iter()
+        .map(|d| {
+            let mark = if d.is_default { " — по умолчанию" } else { "" };
+            (format!("{} ({} Гц, {} кан.){}", d.name, d.rate, d.channels, mark), d.name.clone())
+        })
+        .collect()
+}
+
+pub fn engine_items() -> Vec<(String, String)> {
+    [
+        ("auto — нейросетевой, если модель найдена", "auto"),
+        ("neural — только нейросетевой", "neural"),
+        ("windows — только голос Windows", "windows"),
+    ]
+    .iter()
+    .map(|(l, v)| (l.to_string(), v.to_string()))
+    .collect()
+}
+
+pub fn model_items(devices: &Devices) -> Vec<(String, String)> {
+    devices.models.iter().map(|m| (m.clone(), m.clone())).collect()
+}
+
 pub fn channel_items() -> Vec<(String, String)> {
     [
         ("auto — самый громкий канал", "auto"),
@@ -323,8 +375,7 @@ mod tests {
                 InputDeviceInfo { name: "Микрофон (Realtek)".into(), rate: 44100, channels: 2, format: "f32".into(), is_default: false },
                 InputDeviceInfo { name: "Line (2- Steinberg UR28M)".into(), rate: 96000, channels: 2, format: "f32".into(), is_default: true },
             ],
-            sapi: SapiLists::default(),
-            notes: vec![],
+            ..Devices::default()
         }
     }
 
@@ -336,7 +387,8 @@ mod tests {
             ("vad.threshold", "0.5"), ("vad.min_silence_s", "0.5"), ("vad.min_speech_s", "0.25"),
             ("vad.max_speech_s", "8"), ("vad.pre_roll_s", "0.3"), ("vad.post_roll_s", "0.2"),
             ("voting.min_agree", "2"), ("tts.enabled", "on"), ("tts.voice", "Microsoft Irina Desktop"),
-            ("tts.output_device", ""), ("tts.rate", "0"), ("tts.volume", "100"), ("tts.greeting", "Готов."),
+            ("tts.output_device", ""), ("tts.engine", "auto"), ("tts.model_dir", "vits-piper-ru_RU-irina-medium"),
+            ("tts.speaker_id", "0"), ("tts.speed", "1"), ("tts.say_unclear", "on"), ("tts.rate", "0"), ("tts.volume", "100"), ("tts.greeting", "Готов."),
             ("tts.answer_window_s", "8"), ("tts.echo_tail_s", "0.4"), ("sql.server", "localhost\\TEW_SQLEXPRESS"),
             ("sql.database", "vcm_state"), ("sql.driver", "ODBC Driver 17 for SQL Server"), ("sql.trusted_connection", "on"),
         ]
@@ -374,6 +426,54 @@ mod tests {
             let err = read_form(&full_form(&[(key, bad)])).unwrap_err();
             assert!(err.contains(label), "{key}: {err}");
         }
+    }
+
+    #[test]
+    fn new_voice_settings_are_read_and_validated() {
+        let v = read_form(&full_form(&[("tts.engine", "neural"), ("tts.speed", "1,2"), ("tts.say_not_a_command", "on")])).unwrap();
+        assert_eq!(v.tts.engine, "neural");
+        assert_eq!(v.tts.speed, 1.2);
+        assert!(v.tts.say_not_a_command);
+        assert!(v.tts.say_unclear);
+        assert_eq!(v.tts.model_dir, "vits-piper-ru_RU-irina-medium");
+        // по умолчанию болтовне не отвечаем
+        assert!(!read_form(&full_form(&[])).unwrap().tts.say_not_a_command);
+        for (key, bad, label) in [("tts.engine", "robot", "Голос"), ("tts.speed", "9", "Скорость"), ("tts.speaker_id", "-1", "Номер голоса")] {
+            let err = read_form(&full_form(&[(key, bad)])).unwrap_err();
+            assert!(err.contains(label), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn voice_settings_survive_saving_and_old_config_gets_safe_defaults() {
+        let path = temp_config("voice", SAMPLE);
+        save(&path, &read_form(&full_form(&[("tts.engine", "neural"), ("tts.output_device", "Динамики (Realtek)")])).unwrap()).unwrap();
+        let back: ConfigView = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back.tts.engine, "neural");
+        assert_eq!(back.tts.model_dir, "vits-piper-ru_RU-irina-medium");
+        // старый конфиг без новых ключей: болтовне не отвечаем, «не понял» остаётся
+        let old: ConfigView = toml::from_str("[tts]\nenabled = true\n").unwrap();
+        assert!(!old.tts.say_not_a_command);
+        assert!(old.tts.say_unclear);
+        assert_eq!(old.tts.engine, "auto");
+    }
+
+    #[test]
+    fn engine_output_and_model_lists() {
+        let d = Devices {
+            outputs: vec![OutputDeviceInfo { name: "Динамики (Realtek)".into(), rate: 48000, channels: 2, is_default: true }],
+            models: vec!["vits-piper-ru_RU-irina-medium".into()],
+            ..Devices::default()
+        };
+        let (_, sel) = Choices::build(Some(DEFAULT_LABEL), output_items(&d), "realtek");
+        assert_eq!(sel, "Динамики (Realtek) (48000 Гц, 2 кан.) — по умолчанию");
+        let (c, sel) = Choices::build(None, engine_items(), "neural");
+        assert_eq!(c.value_of(&sel), "neural");
+        let (_, sel) = Choices::build(None, model_items(&d), "vits-piper-ru_RU-irina-medium");
+        assert_eq!(sel, "vits-piper-ru_RU-irina-medium");
+        // модели нет на этом компьютере — остаётся в списке с пометкой
+        let (_, sel) = Choices::build(None, model_items(&Devices::default()), "vits-piper-ru_RU-ruslan-medium");
+        assert!(sel.ends_with("не найдено на этом компьютере"));
     }
 
     #[test]

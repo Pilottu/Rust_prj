@@ -17,7 +17,7 @@ use sherpa_onnx::{SileroVadModelConfig, VadModelConfig, VoiceActivityDetector, W
 
 use crate::audio_config::{AudioConfig, VadConfig, VotingConfig};
 use crate::capture;
-use crate::dialog::{classify, followup_views, prompt_for, Dialog, EngineView, Outcome};
+use crate::dialog::{classify, followup_views, prompt_for, Dialog, EngineView, Outcome, PromptPolicy};
 use crate::tts::{Speaker, TtsConfig};
 use crate::dsp::Resampler;
 use crate::engines::{EngineBank, EnginePaths};
@@ -43,7 +43,7 @@ struct Pipeline {
     reference: HashMap<String, String>,
     speaker: Speaker,
     dialog: Dialog,
-    confirm: bool,
+    policy: PromptPolicy,
     answer_window: Duration,
     echo_guard: bool,
     speaker_error_shown: bool,
@@ -130,10 +130,11 @@ impl Pipeline {
             Outcome::AskNumber { cmd_key, slot } | Outcome::OutOfRange { cmd_key, slot } => {
                 self.dialog.ask(cmd_key.clone(), *slot, now, self.answer_window)
             }
-            Outcome::Accepted { .. } | Outcome::NotACommand => self.dialog.clear(),
-            Outcome::Unclear | Outcome::Silence => {}
+            // Болтовня рядом не должна сбрасывать вопрос «какое значение?»: он сам истечёт по времени.
+            Outcome::Accepted { .. } => self.dialog.clear(),
+            Outcome::NotACommand | Outcome::Unclear | Outcome::Silence => {}
         }
-        if let Some(text) = prompt_for(&outcome, self.confirm) {
+        if let Some(text) = prompt_for(&outcome, &self.policy) {
             if self.speaker.is_enabled() {
                 println!("  Голос: «{text}»");
                 self.say(&text);
@@ -382,7 +383,11 @@ pub fn run(
         reference: pool.reference,
         speaker,
         dialog: Dialog::new(),
-        confirm: tts.confirm,
+        policy: PromptPolicy {
+            confirm: tts.confirm,
+            say_not_a_command: tts.say_not_a_command,
+            say_unclear: tts.say_unclear,
+        },
         answer_window: Duration::from_secs_f32(tts.answer_window_s.max(1.0)),
         echo_guard: false,
         speaker_error_shown: false,

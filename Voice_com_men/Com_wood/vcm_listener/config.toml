@@ -41,7 +41,7 @@ post_roll_s = 0.20000000298023224
 
 [tts]
 enabled = true
-voice = "Microsoft David Desktop"
+voice = ""
 rate = 0
 volume = 100
 confirm = false
@@ -49,6 +49,12 @@ greeting = "Готов."
 answer_window_s = 8.0
 echo_tail_s = 0.4000000059604645
 output_device = "Voicemeeter Input (VB-Audio Voicemeeter VAIO)"
+engine = "auto"
+model_dir = "vits-piper-ru_RU-irina-medium"
+speaker_id = 0
+speed = 1.0
+say_not_a_command = false
+say_unclear = true
 
 [sql]
 server = "localhost\\TEW_SQLEXPRESS"

@@ -13,8 +13,8 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::capture;
 use crate::settings::{
-    channel_items, channel_name, describe_level, gather_devices, input_items, load_view, read_form, save,
-    Choices, ConfigView, Devices, DEFAULT_LABEL, FIRST_RUSSIAN_LABEL,
+    channel_items, channel_name, describe_level, engine_items, gather_devices, input_items, load_view, model_items,
+    output_items, read_form, save, Choices, ConfigView, Devices, DEFAULT_LABEL, FIRST_RUSSIAN_LABEL,
 };
 use crate::tts::{Speaker, TtsConfig};
 
@@ -26,6 +26,8 @@ struct UiChoices {
     channel: Choices,
     voice: Choices,
     output: Choices,
+    engine: Choices,
+    tts_model: Choices,
 }
 
 fn model(labels: Vec<String>) -> ModelRc<SharedString> {
@@ -41,13 +43,16 @@ fn fill(win: &SettingsWindow, v: &ConfigView, d: &Devices) -> UiChoices {
     let (channel, sel_channel) = Choices::build(None, channel_items(), channel_name(v.audio.channel));
     let voices = d.sapi.voices.iter().map(|x| (x.clone(), x.clone())).collect();
     let (voice, sel_voice) = Choices::build(Some(FIRST_RUSSIAN_LABEL), voices, &v.tts.voice);
-    let outputs = d.sapi.outputs.iter().map(|x| (x.clone(), x.clone())).collect();
-    let (output, sel_output) = Choices::build(Some(DEFAULT_LABEL), outputs, &v.tts.output_device);
+    let (output, sel_output) = Choices::build(Some(DEFAULT_LABEL), output_items(d), &v.tts.output_device);
+    let (engine, sel_engine) = Choices::build(None, engine_items(), &v.tts.engine);
+    let (tts_model, sel_model) = Choices::build(None, model_items(d), &v.tts.model_dir);
 
     win.set_input_devices(model(input.labels()));
     win.set_channels(model(channel.labels()));
     win.set_voices(model(voice.labels()));
     win.set_outputs(model(output.labels()));
+    win.set_engines(model(engine.labels()));
+    win.set_tts_models(model(tts_model.labels()));
 
     win.set_models_dir(s(&v.models_dir));
     win.set_audio_device(s(sel_input));
@@ -62,6 +67,12 @@ fn fill(win: &SettingsWindow, v: &ConfigView, d: &Devices) -> UiChoices {
     win.set_vad_post_roll(s(v.vad.post_roll_s));
     win.set_voting_min_agree(s(v.voting.min_agree));
     win.set_tts_enabled(v.tts.enabled);
+    win.set_tts_engine(s(sel_engine));
+    win.set_tts_model_dir(s(sel_model));
+    win.set_tts_speaker_id(s(v.tts.speaker_id));
+    win.set_tts_speed(s(v.tts.speed));
+    win.set_tts_say_unknown(v.tts.say_not_a_command);
+    win.set_tts_say_unclear(v.tts.say_unclear);
     win.set_tts_voice(s(sel_voice));
     win.set_tts_output_device(s(sel_output));
     win.set_tts_rate(s(v.tts.rate));
@@ -75,7 +86,7 @@ fn fill(win: &SettingsWindow, v: &ConfigView, d: &Devices) -> UiChoices {
     win.set_sql_driver(s(&v.sql.driver));
     win.set_sql_trusted(v.sql.trusted_connection);
 
-    UiChoices { input, channel, voice, output }
+    UiChoices { input, channel, voice, output, engine, tts_model }
 }
 
 /// Значения из окна в том виде, как их ждёт settings::read_form.
@@ -96,6 +107,10 @@ fn form_of(w: &SettingsWindow, c: &UiChoices) -> HashMap<String, String> {
     put("vad.pre_roll_s", w.get_vad_pre_roll().to_string());
     put("vad.post_roll_s", w.get_vad_post_roll().to_string());
     put("voting.min_agree", w.get_voting_min_agree().to_string());
+    put("tts.engine", c.engine.value_of(&w.get_tts_engine()));
+    put("tts.model_dir", c.tts_model.value_of(&w.get_tts_model_dir()));
+    put("tts.speaker_id", w.get_tts_speaker_id().to_string());
+    put("tts.speed", w.get_tts_speed().to_string());
     put("tts.voice", c.voice.value_of(&w.get_tts_voice()));
     put("tts.output_device", c.output.value_of(&w.get_tts_output_device()));
     put("tts.rate", w.get_tts_rate().to_string());
@@ -108,6 +123,12 @@ fn form_of(w: &SettingsWindow, c: &UiChoices) -> HashMap<String, String> {
     put("sql.driver", w.get_sql_driver().to_string());
     if w.get_tts_enabled() {
         put("tts.enabled", "on".to_string());
+    }
+    if w.get_tts_say_unknown() {
+        put("tts.say_not_a_command", "on".to_string());
+    }
+    if w.get_tts_say_unclear() {
+        put("tts.say_unclear", "on".to_string());
     }
     if w.get_tts_confirm() {
         put("tts.confirm", "on".to_string());
@@ -126,7 +147,7 @@ fn report(w: &SettingsWindow, ok: bool, text: String) {
 pub fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
     let (view, _) = load_view(config_path)?;
     println!("Собираю список устройств (1–2 секунды)...");
-    let devices = gather_devices();
+    let devices = gather_devices(&view.models_dir);
 
     let win = SettingsWindow::new()?;
     let choices = Rc::new(fill(&win, &view, &devices));
@@ -191,7 +212,9 @@ pub fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
             };
             w.set_busy(true);
             report(&w, true, "Запускаю синтезатор (до нескольких секунд)…".to_string());
-            let tts = TtsConfig { enabled: true, ..v.tts.clone() };
+            let mut tts = TtsConfig { enabled: true, ..v.tts.clone() };
+            // относительный путь модели отсчитывается от папки моделей
+            tts.model_dir = Path::new(&v.models_dir).join(&tts.model_dir).to_string_lossy().into_owned();
             let weak = w.as_weak();
             std::thread::spawn(move || {
                 let (ok, text) = match Speaker::start(&tts).and_then(|mut sp| sp.say("Проверка голоса. Вы меня слышите?")) {

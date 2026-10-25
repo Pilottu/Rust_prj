@@ -74,18 +74,35 @@ pub fn classify(
     }
 }
 
+/// Что говорить вслух, а о чём молчать.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PromptPolicy {
+    /// «Принято.» после выполненной команды.
+    pub confirm: bool,
+    /// «Такой команды нет.» На обычную болтовню в комнате лучше не отвечать.
+    pub say_not_a_command: bool,
+    /// «Не понял. Повторите, пожалуйста.»
+    pub say_unclear: bool,
+}
+
+impl Default for PromptPolicy {
+    fn default() -> Self {
+        Self { confirm: false, say_not_a_command: false, say_unclear: true }
+    }
+}
+
 /// Текст, который нужно произнести (None — промолчать).
-pub fn prompt_for(outcome: &Outcome, confirm: bool) -> Option<String> {
+pub fn prompt_for(outcome: &Outcome, policy: &PromptPolicy) -> Option<String> {
     match outcome {
-        Outcome::Accepted { .. } => confirm.then(|| "Принято.".to_string()),
+        Outcome::Accepted { .. } => policy.confirm.then(|| "Принято.".to_string()),
         Outcome::AskNumber { slot, .. } => {
             Some(format!("Какое значение? От {} до {}.", slot.min, slot.max))
         }
         Outcome::OutOfRange { slot, .. } => {
             Some(format!("Значение вне диапазона. Назовите число от {} до {}.", slot.min, slot.max))
         }
-        Outcome::NotACommand => Some("Такой команды нет.".to_string()),
-        Outcome::Unclear => Some("Не понял. Повторите, пожалуйста.".to_string()),
+        Outcome::NotACommand => policy.say_not_a_command.then(|| "Такой команды нет.".to_string()),
+        Outcome::Unclear => policy.say_unclear.then(|| "Не понял. Повторите, пожалуйста.".to_string()),
         Outcome::Silence => None,
     }
 }
@@ -170,6 +187,11 @@ mod tests {
         (key == "VOL").then_some(SLOT)
     }
 
+    /// Политика «говорить обо всём» — для проверок самих фраз.
+    fn talk(confirm: bool) -> PromptPolicy {
+        PromptPolicy { confirm, say_not_a_command: true, say_unclear: true }
+    }
+
     fn view(has_text: bool, matched: Match) -> EngineView {
         EngineView { has_text, matched }
     }
@@ -188,8 +210,8 @@ mod tests {
     fn accepted_command_without_slot() {
         let o = classify(&accepted("LIGHT", None), &[], &slot_of);
         assert_eq!(o, Outcome::Accepted { cmd_key: "LIGHT".into(), number: None });
-        assert_eq!(prompt_for(&o, false), None);
-        assert_eq!(prompt_for(&o, true), Some("Принято.".to_string()));
+        assert_eq!(prompt_for(&o, &talk(false)), None);
+        assert_eq!(prompt_for(&o, &talk(true)), Some("Принято.".to_string()));
     }
 
     #[test]
@@ -202,7 +224,7 @@ mod tests {
     fn slot_command_accepted_without_number_asks_for_it() {
         let o = classify(&accepted("VOL", None), &[], &slot_of);
         assert_eq!(o, Outcome::AskNumber { cmd_key: "VOL".into(), slot: SLOT });
-        assert_eq!(prompt_for(&o, false), Some("Какое значение? От 0 до 100.".to_string()));
+        assert_eq!(prompt_for(&o, &talk(false)), Some("Какое значение? От 0 до 100.".to_string()));
     }
 
     #[test]
@@ -218,7 +240,7 @@ mod tests {
     fn no_agreement_means_please_repeat() {
         let o = classify(&Verdict::NoAgreement, &[], &slot_of);
         assert_eq!(o, Outcome::Unclear);
-        assert_eq!(prompt_for(&o, false), Some("Не понял. Повторите, пожалуйста.".to_string()));
+        assert_eq!(prompt_for(&o, &talk(false)), Some("Не понял. Повторите, пожалуйста.".to_string()));
     }
 
     #[test]
@@ -226,7 +248,7 @@ mod tests {
         let views = [view(true, Match::None), view(true, Match::None), view(true, Match::None)];
         let o = classify(&Verdict::NothingRecognized, &views, &slot_of);
         assert_eq!(o, Outcome::NotACommand);
-        assert_eq!(prompt_for(&o, false), Some("Такой команды нет.".to_string()));
+        assert_eq!(prompt_for(&o, &talk(false)), Some("Такой команды нет.".to_string()));
     }
 
     #[test]
@@ -234,7 +256,7 @@ mod tests {
         let views = [view(true, Match::None), view(false, Match::None), view(false, Match::None)];
         let o = classify(&Verdict::NothingRecognized, &views, &slot_of);
         assert_eq!(o, Outcome::Silence);
-        assert_eq!(prompt_for(&o, true), None);
+        assert_eq!(prompt_for(&o, &talk(true)), None);
         let none = [view(false, Match::None), view(false, Match::None), view(false, Match::None)];
         assert_eq!(classify(&Verdict::NothingRecognized, &none, &slot_of), Outcome::Silence);
     }
@@ -249,7 +271,7 @@ mod tests {
         let o = classify(&Verdict::NothingRecognized, &views, &slot_of);
         assert_eq!(o, Outcome::OutOfRange { cmd_key: "VOL".into(), slot: SLOT });
         assert_eq!(
-            prompt_for(&o, false),
+            prompt_for(&o, &talk(false)),
             Some("Значение вне диапазона. Назовите число от 0 до 100.".to_string())
         );
     }
@@ -346,5 +368,30 @@ mod tests {
             classify(&verdict, &views, &slot_of),
             Outcome::OutOfRange { cmd_key: "VOL".into(), slot: SLOT }
         );
+    }
+
+    // --- политика ответов ---------------------------------------------------------------
+
+    #[test]
+    fn default_policy_stays_silent_on_chatter_but_still_asks_about_numbers() {
+        let p = PromptPolicy::default();
+        assert_eq!(prompt_for(&Outcome::NotACommand, &p), None, "болтовня не должна получать ответ");
+        assert_eq!(prompt_for(&Outcome::Silence, &p), None);
+        assert_eq!(prompt_for(&Outcome::Accepted { cmd_key: "A".into(), number: None }, &p), None);
+        assert_eq!(
+            prompt_for(&Outcome::Unclear, &p),
+            Some("Не понял. Повторите, пожалуйста.".to_string())
+        );
+        assert!(prompt_for(&Outcome::AskNumber { cmd_key: "VOL".into(), slot: SLOT }, &p).is_some());
+        assert!(prompt_for(&Outcome::OutOfRange { cmd_key: "VOL".into(), slot: SLOT }, &p).is_some());
+    }
+
+    #[test]
+    fn every_prompt_can_be_switched_off_or_on() {
+        let off = PromptPolicy { confirm: false, say_not_a_command: false, say_unclear: false };
+        assert_eq!(prompt_for(&Outcome::Unclear, &off), None);
+        let on = PromptPolicy { confirm: true, say_not_a_command: true, say_unclear: true };
+        assert_eq!(prompt_for(&Outcome::NotACommand, &on), Some("Такой команды нет.".to_string()));
+        assert_eq!(prompt_for(&Outcome::Accepted { cmd_key: "A".into(), number: None }, &on), Some("Принято.".to_string()));
     }
 }
