@@ -41,19 +41,19 @@ post_roll_s = 0.20000000298023224
 
 [tts]
 enabled = true
-voice = ""
+voice = "Microsoft Zira Desktop"
 rate = 0
 volume = 100
-confirm = false
+confirm = true
 greeting = "Готов."
 answer_window_s = 8.0
 echo_tail_s = 0.4000000059604645
 output_device = "Voicemeeter Input (VB-Audio Voicemeeter VAIO)"
-engine = "auto"
+engine = "neural"
 model_dir = "vits-piper-ru_RU-irina-medium"
 speaker_id = 0
 speed = 1.0
-say_not_a_command = false
+say_not_a_command = true
 say_unclear = true
 
 [sql]
@@ -61,3 +61,13 @@ server = "localhost\\TEW_SQLEXPRESS"
 database = "vcm_state"
 driver = "ODBC Driver 17 for SQL Server"
 trusted_connection = true
+
+[wake]
+enabled = true
+words = ["Нафаня"]
+window_s = 6.0
+ack = "Слушаю."
+min_engines = 1
+
+[matching]
+max_extra_words = 2

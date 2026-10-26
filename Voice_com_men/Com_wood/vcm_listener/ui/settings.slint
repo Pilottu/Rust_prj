@@ -76,6 +76,12 @@ export component SettingsWindow inherits Window {
     in-out property <string> tts-greeting;
     in-out property <string> tts-answer-window;
     in-out property <string> tts-echo-tail;
+    in-out property <bool> wake-enabled;
+    in-out property <string> wake-words;
+    in-out property <string> wake-window;
+    in-out property <string> wake-ack;
+    in-out property <string> wake-min-engines;
+    in-out property <string> matching-max-extra;
     in-out property <string> sql-server;
     in-out property <string> sql-database;
     in-out property <string> sql-driver;
@@ -273,7 +279,7 @@ export component SettingsWindow inherits Window {
                     }
                     Row {
                         label: "Говорить «Такой команды нет.»";
-                        hint: "В комнате с разговорами лучше выключить: иначе на каждую фразу будет ответ.";
+                        hint: "Говорит только если во фразе услышано слово из команд в базе; на чужой разговор молчит.";
                         CheckBox {
                             text: "говорить";
                             checked <=> root.tts-say-unknown;
@@ -333,6 +339,59 @@ export component SettingsWindow inherits Window {
                         hint: "От −10 до 10.";
                         LineEdit {
                             text <=> root.tts-rate;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                }
+
+                Section {
+                    title: "Кодовое слово и разбор команд";
+                    Row {
+                        label: "Кодовое слово";
+                        hint: "Включено — фразы без кодового слова игнорируются (разговоры в комнате не мешают).";
+                        CheckBox {
+                            text: "требовать кодовое слово";
+                            checked <=> root.wake-enabled;
+                        }
+                    }
+                    Row {
+                        label: "Слова";
+                        hint: "Через запятую: дом, дача, нафаня. Необычные слова распознаются по-разному — впишите варианты написания.";
+                        LineEdit {
+                            text <=> root.wake-words;
+                        }
+                    }
+                    Row {
+                        label: "Ждать команду после слова, с";
+                        hint: "Если сказать только кодовое слово, команду можно произнести следующей фразой.";
+                        LineEdit {
+                            text <=> root.wake-window;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Ответ на кодовое слово";
+                        hint: "Что сказать, когда услышано только кодовое слово. Пусто — молча.";
+                        LineEdit {
+                            text <=> root.wake-ack;
+                        }
+                    }
+                    Row {
+                        label: "Движков, услышавших слово";
+                        hint: "Из трёх. 1 — мягко (достаточно одного), 2 — строго.";
+                        LineEdit {
+                            text <=> root.wake-min-engines;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Лишних слов во фразе";
+                        hint: "Сколько посторонних слов допускать («…на втором этаже…»). 0 — только точное совпадение.";
+                        LineEdit {
+                            text <=> root.matching-max-extra;
                             horizontal-stretch: 0;
                             width: 120px;
                         }

@@ -22,6 +22,11 @@ pub fn toml_string(s: &str) -> String {
     out
 }
 
+/// Массив строк TOML: ["дом", "дача"].
+pub fn toml_string_array(items: &[String]) -> String {
+    format!("[{}]", items.iter().map(|s| toml_string(s)).collect::<Vec<_>>().join(", "))
+}
+
 /// Число с плавающей точкой: всегда с точкой (иначе TOML прочтёт его как целое).
 pub fn toml_float(f: f64) -> String {
     let s = format!("{f}");
@@ -111,6 +116,16 @@ mod tests {
         assert_eq!(toml_string("a\"b"), r#""a\"b""#);
         assert_eq!(toml_string("Готов."), "\"Готов.\"");
         assert_eq!(toml_string("a\nb"), "\"a\\nb\"");
+    }
+
+    #[test]
+    fn string_arrays_round_trip() {
+        let items = vec!["дом".to_string(), "на фаня".to_string(), "с \"кавычкой\"".to_string()];
+        let text = set_value("[wake]\nenabled = true\n", "wake", "words", &toml_string_array(&items));
+        let v: toml::Value = toml::from_str(&text).unwrap();
+        let back: Vec<String> = v["wake"]["words"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+        assert_eq!(back, items);
+        assert_eq!(toml_string_array(&[]), "[]");
     }
 
     #[test]

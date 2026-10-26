@@ -12,10 +12,12 @@ mod settings_ui;
 mod sql_pool;
 mod tts;
 mod voting;
+mod wake;
 
 use audio_config::{AudioConfig, VadConfig, VotingConfig};
 use sql_pool::SqlConfig;
 use tts::TtsConfig;
+use wake::{MatchingConfig, WakeConfig};
 use serde::Deserialize;
 use sherpa_onnx::{
     OfflineRecognizer, OfflineRecognizerConfig, OnlineRecognizer, OnlineRecognizerConfig, Wave,
@@ -46,6 +48,10 @@ struct Config {
     sql: SqlConfig,
     #[serde(default)]
     tts: TtsConfig,
+    #[serde(default)]
+    wake: WakeConfig,
+    #[serde(default)]
+    matching: MatchingConfig,
 }
 
 #[derive(Deserialize)]
@@ -109,6 +115,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             &config.voting,
             &config.sql,
             &tts,
+            &config.wake,
+            &config.matching,
             wav.as_deref(),
         );
     }

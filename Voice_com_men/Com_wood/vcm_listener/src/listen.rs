@@ -23,7 +23,8 @@ use crate::dsp::Resampler;
 use crate::engines::{EngineBank, EnginePaths};
 use crate::history::History;
 use crate::sql_pool::{self, SqlConfig};
-use vcm_norm::{speech_form, CommandIndex, Match};
+use crate::wake::{decide, MatchingConfig, WakeConfig, WakeDecision, WakeState, WakeWords};
+use vcm_norm::{speech_form, CommandIndex, Match, SpeechForm};
 use crate::voting::{vote, EngineVote, Interpretation, Verdict};
 
 const SAMPLE_RATE: u32 = 16_000;
@@ -47,6 +48,10 @@ struct Pipeline {
     answer_window: Duration,
     echo_guard: bool,
     speaker_error_shown: bool,
+    wake_cfg: WakeConfig,
+    wake_words: WakeWords,
+    wake_state: WakeState,
+    max_extra: usize,
 }
 
 fn create_vad(model: &str, cfg: &VadConfig) -> Result<VoiceActivityDetector, Box<dyn Error>> {
@@ -80,12 +85,18 @@ impl Pipeline {
     }
 
     /// Что движок «услышал» как команду (пустой текст — ничего).
-    fn match_of(&self, text: &str) -> Match {
+    fn match_of(&self, text: &str, form: &SpeechForm) -> Match {
         if text.trim().is_empty() {
             Match::None
         } else {
-            self.index.lookup(&speech_form(text))
+            self.index.lookup_tolerant(form, self.max_extra)
         }
+    }
+
+    /// Фраза не нам (нет кодового слова) или только кодовое слово: показываем одной строкой.
+    fn print_skipped(&self, seconds: f32, texts: &[crate::engines::EngineText], note: &str) {
+        let heard = texts.iter().map(|t| t.text.as_str()).find(|t| !t.is_empty()).unwrap_or("—");
+        println!("\n[#{}] {:.1} с  {}: «{}»", self.counter, seconds, note, heard);
     }
 
     /// Результат движка для голосования.
@@ -217,13 +228,47 @@ impl Pipeline {
         let texts = self.bank.recognize(Arc::new(padded));
 
         // Ждём ли мы число в ответ на прошлый вопрос?
-        let pending = self.dialog.active(Instant::now());
+        let now = Instant::now();
+        let pending = self.dialog.active(now);
         let text_refs: Vec<&str> = texts.iter().map(|t| t.text.as_str()).collect();
         let followup = pending.as_ref().and_then(|p| followup_views(&text_refs, p));
         let answering = followup.is_some();
+
+        // Кодовое слово (на ответ-число оно не требуется).
+        let mut forms: Vec<SpeechForm> = texts.iter().map(|t| speech_form(&t.text)).collect();
+        let mut woke = false;
+        if !answering {
+            match decide(&self.wake_words, &self.wake_cfg, self.wake_state.is_awake(now), &forms) {
+                WakeDecision::Process { forms: f, woke: w } => {
+                    forms = f;
+                    woke = w;
+                }
+                WakeDecision::Ignore => {
+                    self.print_skipped(seconds, &texts, "нет кодового слова, пропущено");
+                    return;
+                }
+                WakeDecision::OpenWindow => {
+                    self.print_skipped(seconds, &texts, "кодовое слово услышано");
+                    let window = Duration::from_secs_f32(self.wake_cfg.window_s.max(1.0));
+                    self.wake_state.open(now, window);
+                    println!("  Слушаю команду {:.0} с", window.as_secs_f32());
+                    if self.speaker.is_enabled() && !self.wake_cfg.ack.trim().is_empty() {
+                        let ack = self.wake_cfg.ack.clone();
+                        println!("  Голос: «{ack}»");
+                        self.say(&ack);
+                    }
+                    return;
+                }
+            }
+        }
+
         let matches: Vec<Match> = match &followup {
             Some(v) => v.iter().map(|x| x.matched.clone()).collect(),
-            None => texts.iter().map(|t| self.match_of(&t.text)).collect(),
+            None => texts
+                .iter()
+                .zip(&forms)
+                .map(|(t, f)| self.match_of(&t.text, f))
+                .collect(),
         };
         let parsed: Vec<(Option<Interpretation>, String)> = matches
             .iter()
@@ -232,7 +277,12 @@ impl Pipeline {
         let views: Vec<EngineView> = texts
             .iter()
             .zip(&matches)
-            .map(|(t, m)| EngineView { has_text: !t.text.trim().is_empty(), matched: m.clone() })
+            .zip(&forms)
+            .map(|((t, m), f)| EngineView {
+                has_text: !t.text.trim().is_empty(),
+                vocab_hit: self.index.vocab_hit(f),
+                matched: m.clone(),
+            })
             .collect();
 
         println!(
@@ -241,6 +291,9 @@ impl Pipeline {
         );
         if answering {
             println!("  (ответ на вопрос: ждали число)");
+        }
+        if woke {
+            println!("  (кодовое слово услышано)");
         }
         for (t, (_, note)) in texts.iter().zip(&parsed) {
             println!(
@@ -299,6 +352,10 @@ impl Pipeline {
 
         let slot_lookup = |key: &str| self.index.slot(key);
         let outcome = classify(&verdict, &views, &slot_lookup);
+        // Окно «слушаю» после кодового слова расходуется на первую настоящую фразу.
+        if !matches!(outcome, Outcome::Silence) {
+            self.wake_state.close();
+        }
         self.react(outcome);
     }
 }
@@ -343,12 +400,19 @@ pub fn run(
     voting: &VotingConfig,
     sql: &SqlConfig,
     tts: &TtsConfig,
+    wake: &WakeConfig,
+    matching: &MatchingConfig,
     wav: Option<&Path>,
 ) -> Result<(), Box<dyn Error>> {
     println!("Читаю пул команд из SQL Server ({} / {})...", sql.server, sql.database);
     let pool = sql_pool::load_pool(sql)
         .map_err(|e| format!("не удалось прочитать dbo.CommandPool: {e}"))?;
-    println!("Команд: {}, вариантов фраз: {}", pool.reference.len(), pool.index.len());
+    println!(
+        "Команд: {}, вариантов фраз: {}, слов в командах: {}",
+        pool.reference.len(),
+        pool.index.len(),
+        pool.index.vocabulary_len()
+    );
     if pool.index.is_empty() {
         println!("ВНИМАНИЕ: пул пуст. Запустите основную программу, чтобы она записала пул, и перезапустите слушатель.");
     }
@@ -391,7 +455,19 @@ pub fn run(
         answer_window: Duration::from_secs_f32(tts.answer_window_s.max(1.0)),
         echo_guard: false,
         speaker_error_shown: false,
+        wake_cfg: wake.clone(),
+        wake_words: WakeWords::new(&wake.words),
+        wake_state: WakeState::default(),
+        max_extra: matching.max_extra_words,
     };
+    if wake.enabled {
+        if pipeline.wake_words.is_empty() {
+            println!("ВНИМАНИЕ: кодовое слово включено, но список слов пуст — фразы разбираются без него.");
+        } else {
+            println!("Кодовые слова: {}; ждать команду после слова {:.0} с.", wake.words.join(", "), wake.window_s);
+        }
+    }
+    println!("Допуск на лишние слова во фразе: {}.", matching.max_extra_words);
 
     match wav {
         Some(path) => {

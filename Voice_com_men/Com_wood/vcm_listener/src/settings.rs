@@ -13,9 +13,10 @@ use serde::Deserialize;
 use crate::audio_config::{AudioConfig, ChannelMode, VadConfig, VotingConfig};
 use crate::capture::{self, InputDeviceInfo};
 use crate::playback::{self, OutputDeviceInfo};
-use crate::config_edit::{set_value, toml_float, toml_string};
+use crate::config_edit::{set_value, toml_float, toml_string, toml_string_array};
 use crate::sql_pool::SqlConfig;
 use crate::tts::{self, SapiLists, TtsConfig};
+use crate::wake::{MatchingConfig, WakeConfig};
 
 /// Где лежит config.toml: рядом с программой, а если там нет — в папке проекта.
 pub fn config_path() -> PathBuf {
@@ -40,6 +41,8 @@ pub struct ConfigView {
     pub voting: VotingConfig,
     pub sql: SqlConfig,
     pub tts: TtsConfig,
+    pub wake: WakeConfig,
+    pub matching: MatchingConfig,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -99,6 +102,14 @@ fn flag(form: &HashMap<String, String>, key: &str) -> bool {
     form.get(key).map(|v| v == "on" || v == "1" || v == "true").unwrap_or(false)
 }
 
+/// «дом, дача; нафаня» -> ["дом", "дача", "нафаня"]
+pub fn split_words(raw: &str) -> Vec<String> {
+    raw.split(|c| c == ',' || c == ';' || c == '\n')
+        .map(|w| w.trim().to_string())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
 pub fn channel_name(c: ChannelMode) -> &'static str {
     match c {
         ChannelMode::Auto => "auto",
@@ -117,6 +128,10 @@ pub fn read_form(form: &HashMap<String, String>) -> Result<ConfigView, String> {
         "mix" => ChannelMode::Mix,
         _ => return Err("Канал должен быть auto, left, right или mix.".to_string()),
     };
+    let wake_words = split_words(text(form, "wake.words"));
+    if flag(form, "wake.enabled") && wake_words.is_empty() {
+        return Err("Кодовое слово включено, но список слов пуст. Впишите слова через запятую.".to_string());
+    }
     let sql_server = text(form, "sql.server").to_string();
     if sql_server.is_empty() {
         return Err("Поле «Сервер SQL» не должно быть пустым.".to_string());
@@ -144,6 +159,16 @@ pub fn read_form(form: &HashMap<String, String>) -> Result<ConfigView, String> {
             database: text(form, "sql.database").to_string(),
             driver: text(form, "sql.driver").to_string(),
             trusted_connection: flag(form, "sql.trusted_connection"),
+        },
+        wake: WakeConfig {
+            enabled: flag(form, "wake.enabled"),
+            words: wake_words,
+            window_s: float(form, "wake.window_s", "Ждать команду после кодового слова, с", 1.0, 60.0)?,
+            ack: text(form, "wake.ack").to_string(),
+            min_engines: int(form, "wake.min_engines", "Движков, услышавших кодовое слово", 1, 3)? as usize,
+        },
+        matching: MatchingConfig {
+            max_extra_words: int(form, "matching.max_extra_words", "Лишних слов во фразе", 0, 6)? as usize,
         },
         tts: TtsConfig {
             enabled: flag(form, "tts.enabled"),
@@ -185,6 +210,12 @@ pub fn apply(v: &ConfigView, old: &str) -> String {
     set("vad", "pre_roll_s", toml_float(v.vad.pre_roll_s as f64));
     set("vad", "post_roll_s", toml_float(v.vad.post_roll_s as f64));
     set("voting", "min_agree", v.voting.min_agree.to_string());
+    set("wake", "enabled", v.wake.enabled.to_string());
+    set("wake", "words", toml_string_array(&v.wake.words));
+    set("wake", "window_s", toml_float(v.wake.window_s as f64));
+    set("wake", "ack", toml_string(&v.wake.ack));
+    set("wake", "min_engines", v.wake.min_engines.to_string());
+    set("matching", "max_extra_words", v.matching.max_extra_words.to_string());
     set("sql", "server", toml_string(&v.sql.server));
     set("sql", "database", toml_string(&v.sql.database));
     set("sql", "driver", toml_string(&v.sql.driver));
@@ -390,6 +421,7 @@ mod tests {
             ("tts.output_device", ""), ("tts.engine", "auto"), ("tts.model_dir", "vits-piper-ru_RU-irina-medium"),
             ("tts.speaker_id", "0"), ("tts.speed", "1"), ("tts.say_unclear", "on"), ("tts.rate", "0"), ("tts.volume", "100"), ("tts.greeting", "Готов."),
             ("tts.answer_window_s", "8"), ("tts.echo_tail_s", "0.4"), ("sql.server", "localhost\\TEW_SQLEXPRESS"),
+            ("wake.window_s", "6"), ("wake.ack", "Слушаю."), ("wake.min_engines", "1"), ("matching.max_extra_words", "2"),
             ("sql.database", "vcm_state"), ("sql.driver", "ODBC Driver 17 for SQL Server"), ("sql.trusted_connection", "on"),
         ]
         .iter()
@@ -453,9 +485,36 @@ mod tests {
         assert_eq!(back.tts.model_dir, "vits-piper-ru_RU-irina-medium");
         // старый конфиг без новых ключей: болтовне не отвечаем, «не понял» остаётся
         let old: ConfigView = toml::from_str("[tts]\nenabled = true\n").unwrap();
-        assert!(!old.tts.say_not_a_command);
+        assert!(old.tts.say_not_a_command, "теперь отвечает, но только при словах из базы");
         assert!(old.tts.say_unclear);
+        assert!(!old.wake.enabled, "кодового слова в старом конфиге нет — работает как раньше");
+        assert_eq!(old.matching.max_extra_words, 2);
         assert_eq!(old.tts.engine, "auto");
+    }
+
+    #[test]
+    fn wake_word_settings_are_read_validated_and_saved() {
+        assert_eq!(split_words("дом, дача; на фаня\n нафаня ,, "), vec!["дом", "дача", "на фаня", "нафаня"]);
+        let v = read_form(&full_form(&[("wake.enabled", "on"), ("wake.words", "Дом, Нафаня"), ("matching.max_extra_words", "3")])).unwrap();
+        assert!(v.wake.enabled);
+        assert_eq!(v.wake.words, vec!["Дом", "Нафаня"]);
+        assert_eq!(v.matching.max_extra_words, 3);
+        // включено, но слов нет — понятная ошибка
+        let err = read_form(&full_form(&[("wake.enabled", "on"), ("wake.words", " , ")])).unwrap_err();
+        assert!(err.contains("список слов пуст"), "{err}");
+        // выключено — слова можно не задавать
+        assert!(read_form(&full_form(&[("wake.words", "")])).is_ok());
+        for (key, bad, label) in [("matching.max_extra_words", "9", "Лишних"), ("wake.min_engines", "5", "Движков"), ("wake.window_s", "0", "Ждать команду")] {
+            let err = read_form(&full_form(&[(key, bad)])).unwrap_err();
+            assert!(err.contains(label), "{key}: {err}");
+        }
+        // сохранение: массив слов и секции записываются, файл читается
+        let path = temp_config("wake", SAMPLE);
+        save(&path, &v).unwrap();
+        let back: ConfigView = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(back.wake.enabled);
+        assert_eq!(back.wake.words, vec!["Дом", "Нафаня"]);
+        assert_eq!(back.matching.max_extra_words, 3);
     }
 
     #[test]

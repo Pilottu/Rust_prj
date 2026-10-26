@@ -37,7 +37,7 @@ pub struct TtsConfig {
     pub speaker_id: u32,
     /// Скорость нейросетевого голоса: 1.0 — обычная, больше — быстрее.
     pub speed: f32,
-    /// Говорить «Такой команды нет.» (в шумной комнате лучше выключить).
+    /// Говорить «Такой команды нет.» — только если во фразе услышано хоть одно слово из команд в базе.
     pub say_not_a_command: bool,
     /// Говорить «Не понял. Повторите, пожалуйста.».
     pub say_unclear: bool,
@@ -67,7 +67,7 @@ impl Default for TtsConfig {
             model_dir: "vits-piper-ru_RU-irina-medium".to_string(),
             speaker_id: 0,
             speed: 1.0,
-            say_not_a_command: false,
+            say_not_a_command: true,
             say_unclear: true,
             voice: "Irina".to_string(),
             output_device: String::new(),
@@ -691,10 +691,10 @@ mod tests {
     }
 
     #[test]
-    fn defaults_keep_the_room_quiet() {
+    fn defaults_are_sensible() {
         let c = TtsConfig::default();
         assert_eq!(c.engine, "auto");
-        assert!(!c.say_not_a_command, "на болтовню отвечать не должен");
+        assert!(c.say_not_a_command, "говорит только при словах из базы, это решает dialog::classify");
         assert!(c.say_unclear);
         assert_eq!(c.model_dir, "vits-piper-ru_RU-irina-medium");
         assert_eq!(c.speaker_id, 0);
