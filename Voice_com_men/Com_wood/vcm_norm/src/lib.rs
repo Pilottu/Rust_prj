@@ -26,6 +26,8 @@ const STOP_WORDS: &[&str] = &[
     "в", "во", "на", "по", "у", "и", "с", "со", "к", "ко", "для", "из", "от", "до", "за", "о", "об",
     "а", "но", "же", "бы", "ли", "пожалуйста", "ка", "мне", "нам", "ну", "вот", "процент",
     "процента", "процентов", "градус", "градуса", "градусов",
+    // частицы, которые разные движки пишут то через дефис, то раздельно: «как-то», «кое-что»
+    "то", "нибудь", "либо", "кое", "таки",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +58,27 @@ pub struct SpeechForm {
     pub number: Option<u32>,
     /// Тот же ключ без метки: для случая «число не расслышали».
     pub key_without_number: String,
+    /// Основы слов (без повторов, по алфавиту; метка `#` — если было число).
+    pub stems: Vec<String>,
+}
+
+impl SpeechForm {
+    fn from_stems(mut stems: Vec<String>, number: Option<u32>) -> SpeechForm {
+        stems.sort_unstable();
+        stems.dedup();
+        let key = stems.join(" ");
+        let key_without_number =
+            stems.iter().filter(|s| s.as_str() != SLOT_MARK).cloned().collect::<Vec<_>>().join(" ");
+        SpeechForm { key, number, key_without_number, stems }
+    }
+
+    /// Та же фраза без перечисленных основ (например, без кодового слова).
+    /// Число сохраняется, если метка `#` не удалялась.
+    pub fn without(&self, remove: &HashSet<String>) -> SpeechForm {
+        let stems: Vec<String> = self.stems.iter().filter(|s| !remove.contains(*s)).cloned().collect();
+        let number = if stems.iter().any(|s| s == SLOT_MARK) { self.number } else { None };
+        SpeechForm::from_stems(stems, number)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -260,8 +283,7 @@ pub fn speech_form(text: &str) -> SpeechForm {
         }
         i += 1;
     }
-    let key_without_number = finish(stems.iter().filter(|s| s.as_str() != SLOT_MARK).cloned().collect());
-    SpeechForm { key: finish(stems), number, key_without_number }
+    SpeechForm::from_stems(stems, number)
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +316,10 @@ pub struct CommandIndex {
     /// Слотовые команды по ключу без метки `#` (для «число не расслышали»).
     by_key_no_slot: HashMap<String, Vec<IndexEntry>>,
     slots: HashMap<String, Slot>,
+    /// Все записи с основами (для разбора с допуском на лишние слова).
+    all: Vec<(Vec<String>, IndexEntry)>,
+    /// Все основы слов, встречающиеся в командах (без метки слота).
+    vocabulary: HashSet<String>,
     len: usize,
 }
 
@@ -317,6 +343,9 @@ impl CommandIndex {
                 .or_default()
                 .push(entry.clone());
         }
+        let stems: Vec<String> = entry.match_key.split(' ').map(str::to_string).collect();
+        self.vocabulary.extend(stems.iter().filter(|w| w.as_str() != SLOT_MARK).cloned());
+        self.all.push((stems, entry.clone()));
         self.by_key.entry(entry.match_key.clone()).or_default().push(entry);
         self.len += 1;
     }
@@ -341,6 +370,60 @@ impl CommandIndex {
             .filter(|e| seen.insert(e.cmd_key.clone()))
             .map(|e| e.cmd_key.clone())
             .collect()
+    }
+
+    /// Есть ли в фразе хотя бы одно слово из всех команд пула.
+    pub fn vocab_hit(&self, speech: &SpeechForm) -> bool {
+        speech.stems.iter().any(|w| w != SLOT_MARK && self.vocabulary.contains(w))
+    }
+
+    /// Сколько разных слов во всех командах (для вывода пользователю).
+    pub fn vocabulary_len(&self) -> usize {
+        self.vocabulary.len()
+    }
+
+    /// Как `lookup`, но если точного совпадения нет, допускает до `max_extra` лишних слов
+    /// («на мансарде в спальне НА ВТОРОМ ЭТАЖЕ теплый пол сорок» -> команда без «второго этажа»).
+    /// Выбирается команда с наименьшим числом лишних слов; если таких несколько разных — Ambiguous.
+    /// Число во фразе не подходит команде без слота (это не лишнее слово, а несовпадение).
+    pub fn lookup_tolerant(&self, speech: &SpeechForm, max_extra: usize) -> Match {
+        let exact = self.lookup(speech);
+        if max_extra == 0 || !matches!(exact, Match::None) {
+            return exact;
+        }
+        let spoken: HashSet<&str> = speech.stems.iter().map(String::as_str).collect();
+        let has_number = speech.number.is_some();
+
+        let mut best: Option<usize> = None;
+        let mut found: Vec<(usize, &IndexEntry)> = Vec::new();
+        for (stems, entry) in &self.all {
+            let core: Vec<&str> = stems.iter().map(String::as_str).filter(|w| *w != SLOT_MARK).collect();
+            if core.is_empty() || !core.iter().all(|w| spoken.contains(w)) {
+                continue;
+            }
+            if has_number && entry.slot.is_none() {
+                continue;
+            }
+            let extra = spoken.iter().filter(|w| **w != SLOT_MARK && !core.contains(w)).count();
+            if extra > max_extra {
+                continue;
+            }
+            best = Some(best.map_or(extra, |b| b.min(extra)));
+            found.push((extra, entry));
+        }
+        let Some(best) = best else { return Match::None };
+        let entries: Vec<IndexEntry> = found.into_iter().filter(|(e, _)| *e == best).map(|(_, en)| en.clone()).collect();
+        let keys = Self::distinct(&entries);
+        if keys.len() > 1 {
+            return Match::Ambiguous(keys);
+        }
+        let entry = &entries[0];
+        match (entry.slot, speech.number) {
+            (Some(slot), Some(n)) if slot.contains(n) => Match::Exact { cmd_key: entry.cmd_key.clone(), number: Some(n) },
+            (Some(slot), Some(n)) => Match::OutOfRange { cmd_key: entry.cmd_key.clone(), number: n, slot },
+            (Some(_), None) => Match::NeedNumber { cmd_key: entry.cmd_key.clone() },
+            (None, _) => Match::Exact { cmd_key: entry.cmd_key.clone(), number: None },
+        }
     }
 
     pub fn lookup(&self, speech: &SpeechForm) -> Match {
@@ -592,5 +675,139 @@ mod tests {
             idx.lookup(&speech_form("свет включи")),
             Match::Exact { cmd_key: "A".into(), number: None }
         );
+    }
+
+    // --- дефисные частицы и лишние слова -----------------------------------------------------
+
+    #[test]
+    fn hyphenated_particles_match_their_spaced_forms() {
+        for (a, b) in [
+            ("как-то включи свет", "как то включи свет"),
+            ("сделай тёплый пол кое-что", "сделай теплый пол кое что"),
+            ("включи свет кто-нибудь", "включи свет кто нибудь"),
+            ("включи-ка свет", "включи ка свет"),
+            ("включи свет из-за двери", "включи свет из за двери"),
+        ] {
+            assert_eq!(speech_form(a), speech_form(b), "{a} | {b}");
+        }
+    }
+
+    #[test]
+    fn particles_do_not_count_as_extra_words() {
+        assert_eq!(key("включи свет как-то"), key("включи свет как"));
+        assert_eq!(key("ну включи-таки свет"), key("включи свет"));
+    }
+
+    fn tolerant_index() -> CommandIndex {
+        let mut idx = CommandIndex::new();
+        for (cmd, phrase) in [
+            ("HEAT", "Сделай Теплый пол Мансарда спальня 0-100"),
+            ("HEAT", "Поставь Теплый пол Мансарда спальня 0-100"),
+            ("LAMP", "Включить Освещение Второй этаж спальня"),
+            ("VOL", "Сделай Громкость Телевизор Второй этаж зал 0-100"),
+        ] {
+            let f = command_form(phrase);
+            idx.insert(IndexEntry { cmd_key: cmd.into(), match_key: f.key, slot: f.slot });
+        }
+        idx
+    }
+
+    #[test]
+    fn the_phrase_from_the_real_log_matches_with_two_extra_words() {
+        let idx = tolerant_index();
+        let said = speech_form("сделай на мансарде в спальне на втором этаже теплый пол сорок");
+        // строго — не находит (лишние «второй этаж»), с допуском — находит
+        assert_eq!(idx.lookup(&said), Match::None);
+        assert_eq!(
+            idx.lookup_tolerant(&said, 2),
+            Match::Exact { cmd_key: "HEAT".into(), number: Some(40) }
+        );
+        assert_eq!(idx.lookup_tolerant(&said, 1), Match::None, "допуск 1 — слишком мало для двух лишних слов");
+        assert_eq!(idx.lookup_tolerant(&said, 0), Match::None);
+    }
+
+    #[test]
+    fn exact_match_wins_and_tolerance_does_not_change_it() {
+        let idx = tolerant_index();
+        let said = speech_form("включи освещение на втором этаже в спальне");
+        assert_eq!(idx.lookup_tolerant(&said, 2), idx.lookup(&said));
+        assert_eq!(idx.lookup(&said), Match::Exact { cmd_key: "LAMP".into(), number: None });
+    }
+
+    #[test]
+    fn missing_number_is_still_asked_for_with_extra_words() {
+        let idx = tolerant_index();
+        let said = speech_form("пожалуйста сделай теплый пол на мансарде в спальне дома");
+        assert_eq!(idx.lookup_tolerant(&said, 2), Match::NeedNumber { cmd_key: "HEAT".into() });
+    }
+
+    #[test]
+    fn out_of_range_number_is_reported_with_extra_words() {
+        let idx = tolerant_index();
+        let said = speech_form("сделай теплый пол мансарда спальня на втором этаже сто пятьдесят");
+        assert!(matches!(idx.lookup_tolerant(&said, 2), Match::OutOfRange { number: 150, .. }));
+    }
+
+    #[test]
+    fn a_number_never_fits_a_command_without_a_slot() {
+        let idx = tolerant_index();
+        let said = speech_form("включи освещение второй этаж спальня сорок");
+        assert_eq!(idx.lookup_tolerant(&said, 2), Match::None);
+    }
+
+    #[test]
+    fn the_command_with_fewer_extra_words_wins_and_ties_are_ambiguous() {
+        let mut idx = CommandIndex::new();
+        for (cmd, phrase) in [("A", "Включить свет"), ("B", "Включить свет спальня")] {
+            let f = command_form(phrase);
+            idx.insert(IndexEntry { cmd_key: cmd.into(), match_key: f.key, slot: f.slot });
+        }
+        // «включи свет в спальне зал»: у B одно лишнее слово (зал), у A — два (спальня, зал)
+        assert_eq!(
+            idx.lookup_tolerant(&speech_form("включи свет в спальне зал"), 2),
+            Match::Exact { cmd_key: "B".into(), number: None }
+        );
+        // две разные команды с одинаковым числом лишних слов
+        let mut tie = CommandIndex::new();
+        for (cmd, phrase) in [("A", "Включить свет"), ("B", "Включить свет")] {
+            let f = command_form(phrase);
+            tie.insert(IndexEntry { cmd_key: cmd.into(), match_key: f.key, slot: f.slot });
+        }
+        // точное совпадение у обеих — это неоднозначность уже в lookup
+        assert!(matches!(tie.lookup_tolerant(&speech_form("включи свет"), 2), Match::Ambiguous(_)));
+    }
+
+    #[test]
+    fn partial_phrases_still_do_not_match() {
+        let idx = tolerant_index();
+        // не хватает слов команды — допуск касается только ЛИШНИХ слов
+        assert_eq!(idx.lookup_tolerant(&speech_form("сделай теплый пол сорок"), 5), Match::None);
+        assert_eq!(idx.lookup_tolerant(&speech_form("мансарда спальня"), 5), Match::None);
+    }
+
+    // --- словарь команд и вырезание слов --------------------------------------------------------
+
+    #[test]
+    fn vocabulary_hit_means_a_command_word_was_heard() {
+        let idx = tolerant_index();
+        assert!(idx.vocab_hit(&speech_form("а вы не видели мой телевизор")));
+        assert!(idx.vocab_hit(&speech_form("сделай что-нибудь")));
+        assert!(!idx.vocab_hit(&speech_form("какая сегодня погода у соседей")));
+        assert!(!idx.vocab_hit(&speech_form("пятьдесят")), "число само по себе — не слово команды");
+        assert!(idx.vocabulary_len() > 8);
+    }
+
+    #[test]
+    fn words_can_be_removed_from_a_spoken_phrase() {
+        let f = speech_form("нафаня включи свет в спальне");
+        let remove: HashSet<String> = speech_form("нафаня").stems.into_iter().collect();
+        let g = f.without(&remove);
+        assert_eq!(g.key, speech_form("включи свет в спальне").key);
+        assert_eq!(g.number, None);
+        // число сохраняется, если удалялась не метка
+        let h = speech_form("нафаня громкость пятьдесят").without(&remove);
+        assert_eq!(h.number, Some(50));
+        // фраза из одного кодового слова становится пустой
+        assert!(speech_form("нафаня").without(&remove).key.is_empty());
     }
 }

@@ -41,17 +41,43 @@ post_roll_s = 0.20000000298023224
 
 [tts]
 enabled = true
+<<<<<<< HEAD
 voice = "Microsoft David Desktop"
+=======
+voice = "Microsoft Zira Desktop"
+>>>>>>> 932366a5abd00c4c9714a8846b67684b866c5721
 rate = 0
 volume = 100
-confirm = false
+confirm = true
 greeting = "Готов."
 answer_window_s = 8.0
 echo_tail_s = 0.4000000059604645
 output_device = "Voicemeeter Input (VB-Audio Voicemeeter VAIO)"
+<<<<<<< HEAD
+=======
+engine = "neural"
+model_dir = "vits-piper-ru_RU-irina-medium"
+speaker_id = 0
+speed = 1.0
+say_not_a_command = true
+say_unclear = true
+>>>>>>> 932366a5abd00c4c9714a8846b67684b866c5721
 
 [sql]
 server = "localhost\\TEW_SQLEXPRESS"
 database = "vcm_state"
 driver = "ODBC Driver 17 for SQL Server"
 trusted_connection = true
+<<<<<<< HEAD
+=======
+
+[wake]
+enabled = true
+words = ["Нафаня"]
+window_s = 6.0
+ack = "Слушаю."
+min_engines = 1
+
+[matching]
+max_extra_words = 2
+>>>>>>> 932366a5abd00c4c9714a8846b67684b866c5721

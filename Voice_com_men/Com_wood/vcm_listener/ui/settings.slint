@@ -62,6 +62,12 @@ export component SettingsWindow inherits Window {
     in-out property <string> vad-post-roll;
     in-out property <string> voting-min-agree;
     in-out property <bool> tts-enabled;
+    in-out property <string> tts-engine;
+    in-out property <string> tts-model-dir;
+    in-out property <string> tts-speaker-id;
+    in-out property <string> tts-speed;
+    in-out property <bool> tts-say-unknown;
+    in-out property <bool> tts-say-unclear;
     in-out property <string> tts-voice;
     in-out property <string> tts-output-device;
     in-out property <string> tts-rate;
@@ -70,6 +76,12 @@ export component SettingsWindow inherits Window {
     in-out property <string> tts-greeting;
     in-out property <string> tts-answer-window;
     in-out property <string> tts-echo-tail;
+    in-out property <bool> wake-enabled;
+    in-out property <string> wake-words;
+    in-out property <string> wake-window;
+    in-out property <string> wake-ack;
+    in-out property <string> wake-min-engines;
+    in-out property <string> matching-max-extra;
     in-out property <string> sql-server;
     in-out property <string> sql-database;
     in-out property <string> sql-driver;
@@ -80,6 +92,8 @@ export component SettingsWindow inherits Window {
     in property <[string]> channels;
     in property <[string]> voices;
     in property <[string]> outputs;
+    in property <[string]> engines;
+    in property <[string]> tts-models;
 
     // --- состояние -------------------------------------------------------------
     in property <string> status;
@@ -213,28 +227,45 @@ export component SettingsWindow inherits Window {
                         }
                     }
                     Row {
-                        label: "Голос";
-                        hint: "Русский голос Windows.";
+                        label: "Какой голос";
+                        hint: "auto — нейросетевой, если модель найдена, иначе голос Windows.";
                         ComboBox {
-                            model: root.voices;
-                            current-value <=> root.tts-voice;
+                            model: root.engines;
+                            current-value <=> root.tts-engine;
+                        }
+                    }
+                    Row {
+                        label: "Нейросетевая модель";
+                        hint: "Папка с голосом (Piper) внутри папки моделей: .onnx, tokens.txt, espeak-ng-data.";
+                        ComboBox {
+                            model: root.tts-models;
+                            current-value <=> root.tts-model-dir;
+                        }
+                    }
+                    Row {
+                        label: "Скорость нейросетевого голоса";
+                        hint: "1.0 — обычная, больше — быстрее (0.3–3.0).";
+                        LineEdit {
+                            text <=> root.tts-speed;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Номер голоса в модели";
+                        hint: "У русских моделей Piper он один: 0.";
+                        LineEdit {
+                            text <=> root.tts-speaker-id;
+                            horizontal-stretch: 0;
+                            width: 120px;
                         }
                     }
                     Row {
                         label: "Устройство воспроизведения";
-                        hint: "Куда говорить: колонки, наушники.";
+                        hint: "Куда говорить: колонки, наушники. Для обоих голосов.";
                         ComboBox {
                             model: root.outputs;
                             current-value <=> root.tts-output-device;
-                        }
-                    }
-                    Row {
-                        label: "Скорость речи";
-                        hint: "От −10 до 10.";
-                        LineEdit {
-                            text <=> root.tts-rate;
-                            horizontal-stretch: 0;
-                            width: 120px;
                         }
                     }
                     Row {
@@ -244,6 +275,22 @@ export component SettingsWindow inherits Window {
                             text <=> root.tts-volume;
                             horizontal-stretch: 0;
                             width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Говорить «Такой команды нет.»";
+                        hint: "Говорит только если во фразе услышано слово из команд в базе; на чужой разговор молчит.";
+                        CheckBox {
+                            text: "говорить";
+                            checked <=> root.tts-say-unknown;
+                        }
+                    }
+                    Row {
+                        label: "Говорить «Не понял.»";
+                        hint: "Когда движки разошлись или команда неоднозначна.";
+                        CheckBox {
+                            text: "говорить";
+                            checked <=> root.tts-say-unclear;
                         }
                     }
                     Row {
@@ -275,6 +322,76 @@ export component SettingsWindow inherits Window {
                         hint: "Столько микрофон не слушает после голоса (эхо колонок).";
                         LineEdit {
                             text <=> root.tts-echo-tail;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Голос Windows (запасной)";
+                        hint: "Нужен только если выбран windows. Если у вас нет русских голосов Windows, оставьте как есть.";
+                        ComboBox {
+                            model: root.voices;
+                            current-value <=> root.tts-voice;
+                        }
+                    }
+                    Row {
+                        label: "Скорость голоса Windows";
+                        hint: "От −10 до 10.";
+                        LineEdit {
+                            text <=> root.tts-rate;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                }
+
+                Section {
+                    title: "Кодовое слово и разбор команд";
+                    Row {
+                        label: "Кодовое слово";
+                        hint: "Включено — фразы без кодового слова игнорируются (разговоры в комнате не мешают).";
+                        CheckBox {
+                            text: "требовать кодовое слово";
+                            checked <=> root.wake-enabled;
+                        }
+                    }
+                    Row {
+                        label: "Слова";
+                        hint: "Через запятую: дом, дача, нафаня. Необычные слова распознаются по-разному — впишите варианты написания.";
+                        LineEdit {
+                            text <=> root.wake-words;
+                        }
+                    }
+                    Row {
+                        label: "Ждать команду после слова, с";
+                        hint: "Если сказать только кодовое слово, команду можно произнести следующей фразой.";
+                        LineEdit {
+                            text <=> root.wake-window;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Ответ на кодовое слово";
+                        hint: "Что сказать, когда услышано только кодовое слово. Пусто — молча.";
+                        LineEdit {
+                            text <=> root.wake-ack;
+                        }
+                    }
+                    Row {
+                        label: "Движков, услышавших слово";
+                        hint: "Из трёх. 1 — мягко (достаточно одного), 2 — строго.";
+                        LineEdit {
+                            text <=> root.wake-min-engines;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Лишних слов во фразе";
+                        hint: "Сколько посторонних слов допускать («…на втором этаже…»). 0 — только точное совпадение.";
+                        LineEdit {
+                            text <=> root.matching-max-extra;
                             horizontal-stretch: 0;
                             width: 120px;
                         }
