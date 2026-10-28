@@ -271,6 +271,11 @@ IF OBJECT_ID(N'dbo.CommandResults', N'U') IS NULL
         Seq BIGINT NOT NULL DEFAULT 0,
         UpdatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
     );
+IF OBJECT_ID(N'dbo.CommandVocab', N'U') IS NULL
+    CREATE TABLE dbo.CommandVocab (
+        Stem NVARCHAR(100) NOT NULL,
+        Category NVARCHAR(100) NOT NULL
+    );
 "#,
     )?;
     Ok(())
@@ -706,8 +711,13 @@ fn save_command_pool(
             "CREATE OR ALTER VIEW dbo.v_CommandReference AS SELECT p.CmdKey, p.Vozmozhnie AS Phrase, p.HasSlot, p.SlotMin, p.SlotMax, b.TagName, b.ValueType FROM dbo.CommandPool AS p LEFT JOIN dbo.CommandBindings AS b ON b.CmdKey = p.CmdKey WHERE p.Rang = 0",
         )?;
         let json = bind_text(phrases_json);
+        execute(connection, "DELETE FROM dbo.CommandVocab;")?;
         connection.execute(
-            "INSERT INTO dbo.CommandPool (CmdKey, Vozmozhnie, Rang, MatchKey, HasSlot, SlotMin, SlotMax) SELECT CmdKey, Vozmozhnie, Rang, MatchKey, HasSlot, SlotMin, SlotMax FROM OPENJSON(?) WITH (CmdKey NVARCHAR(450) '$.c', Vozmozhnie NVARCHAR(MAX) '$.v', Rang BIT '$.r', MatchKey NVARCHAR(450) '$.m', HasSlot BIT '$.h', SlotMin INT '$.a', SlotMax INT '$.b')",
+            "INSERT INTO dbo.CommandVocab (Stem, Category) SELECT Stem, Category FROM OPENJSON(?, '$.vocab') WITH (Stem NVARCHAR(100) '$.s', Category NVARCHAR(100) '$.c')",
+            (&json,),
+        )?;
+        connection.execute(
+            "INSERT INTO dbo.CommandPool (CmdKey, Vozmozhnie, Rang, MatchKey, HasSlot, SlotMin, SlotMax) SELECT CmdKey, Vozmozhnie, Rang, MatchKey, HasSlot, SlotMin, SlotMax FROM OPENJSON(?, '$.pool') WITH (CmdKey NVARCHAR(450) '$.c', Vozmozhnie NVARCHAR(MAX) '$.v', Rang BIT '$.r', MatchKey NVARCHAR(450) '$.m', HasSlot BIT '$.h', SlotMin INT '$.a', SlotMax INT '$.b')",
             (&json,),
         )?;
         Ok(())
@@ -749,7 +759,7 @@ fn report_collisions(pool: &[crate::command_pool::CommandVariant]) {
 }
 
 fn sync_command_pool(connection: &Connection<'_>, trees: &[CADTree], links: &[CADLink]) {
-    let pool = crate::command_pool::build_pool(trees, links);
+    let (pool, vocab) = crate::command_pool::build_pool_and_vocab(trees, links);
     report_collisions(&pool);
     let phrases: Vec<serde_json::Value> = pool
         .iter()
@@ -765,7 +775,11 @@ fn sync_command_pool(connection: &Connection<'_>, trees: &[CADTree], links: &[CA
             })
         })
         .collect();
-    let Ok(json) = serde_json::to_string(&phrases) else {
+    let vocab_json: Vec<serde_json::Value> = vocab
+        .iter()
+        .map(|v| serde_json::json!({ "s": v.stem.chars().take(100).collect::<String>(), "c": v.category.chars().take(100).collect::<String>() }))
+        .collect();
+    let Ok(json) = serde_json::to_string(&serde_json::json!({ "pool": phrases, "vocab": vocab_json })) else {
         return;
     };
     let cache = LAST_COMMAND_POOL.get_or_init(|| Mutex::new(None));

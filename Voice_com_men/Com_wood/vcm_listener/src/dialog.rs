@@ -6,9 +6,9 @@
 
 use std::time::{Duration, Instant};
 
-use vcm_norm::{speech_form, Match, Slot};
+use vcm_norm::{speech_form, CommandIndex, Match, SpeechForm, Slot};
 
-use crate::voting::Verdict;
+use crate::voting::{vote, EngineVote, Interpretation, Verdict};
 
 /// Итог разбора фразы с точки зрения пользователя.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +34,69 @@ pub struct EngineView {
     /// Среди услышанных слов есть хотя бы одно слово из команд в базе.
     pub vocab_hit: bool,
     pub matched: Match,
+}
+
+/// Разбор, голосование и исход для одной фразы.
+#[derive(Debug, Clone)]
+pub struct Evaluation {
+    pub matches: Vec<Match>,
+    pub views: Vec<EngineView>,
+    pub verdict: Verdict,
+    pub outcome: Outcome,
+}
+
+pub const ENGINE_NAMES: [&str; 3] = ["GigaAM", "T-one", "Vosk"];
+
+/// Что движок «услышал» для голосования: команда (и число, если оно есть).
+pub fn interpretation_of(m: &Match) -> Option<Interpretation> {
+    match m {
+        Match::Exact { cmd_key, number } => Some(Interpretation { cmd_key: cmd_key.clone(), number: *number }),
+        Match::NeedNumber { cmd_key } => Some(Interpretation { cmd_key: cmd_key.clone(), number: None }),
+        _ => None,
+    }
+}
+
+/// Разбор фраз каждого движка по пулу. `subset` — после уточняющего вопроса: если точной
+/// команды нет, берётся единственная команда, содержащая все названные слова.
+pub fn match_forms(index: &CommandIndex, forms: &[SpeechForm], has_text: &[bool], max_extra: usize, subset: bool) -> Vec<Match> {
+    forms
+        .iter()
+        .zip(has_text)
+        .map(|(f, has)| {
+            if !has {
+                return Match::None;
+            }
+            let m = index.lookup_tolerant(f, max_extra);
+            if subset && matches!(m, Match::None) {
+                index.lookup_subset(f)
+            } else {
+                m
+            }
+        })
+        .collect()
+}
+
+/// Голосование и исход по уже готовым разборам.
+pub fn judge(
+    index: &CommandIndex,
+    matches: Vec<Match>,
+    has_text: &[bool],
+    vocab_hit: &[bool],
+    min_agree: usize,
+) -> Evaluation {
+    let votes: Vec<EngineVote> = ENGINE_NAMES
+        .iter()
+        .zip(&matches)
+        .map(|(e, m)| EngineVote { engine: e, interpretation: interpretation_of(m) })
+        .collect();
+    let views: Vec<EngineView> = matches
+        .iter()
+        .zip(has_text.iter().zip(vocab_hit))
+        .map(|(m, (has, hit))| EngineView { has_text: *has, vocab_hit: *hit, matched: m.clone() })
+        .collect();
+    let verdict = vote(&votes, min_agree);
+    let outcome = classify(&verdict, &views, &|k| index.slot(k));
+    Evaluation { matches, views, verdict, outcome }
 }
 
 pub fn classify(
@@ -436,26 +499,10 @@ mod tests {
     /// Как listen.rs: формы -> разбор -> голосование -> исход.
     fn run_pipeline(idx: &vcm_norm::CommandIndex, texts: [&str; 3], max_extra: usize) -> Outcome {
         let forms: Vec<_> = texts.iter().map(|t| speech_form(t)).collect();
-        let matches: Vec<Match> = forms.iter().map(|f| idx.lookup_tolerant(f, max_extra)).collect();
-        let votes: Vec<EngineVote> = ["GigaAM", "T-one", "Vosk"]
-            .iter()
-            .zip(&matches)
-            .map(|(e, m)| EngineVote {
-                engine: e,
-                interpretation: match m {
-                    Match::Exact { cmd_key, number } => Some(Interpretation { cmd_key: cmd_key.clone(), number: *number }),
-                    Match::NeedNumber { cmd_key } => Some(Interpretation { cmd_key: cmd_key.clone(), number: None }),
-                    _ => None,
-                },
-            })
-            .collect();
-        let views: Vec<EngineView> = texts
-            .iter()
-            .zip(&forms)
-            .zip(&matches)
-            .map(|((t, f), m)| EngineView { has_text: !t.trim().is_empty(), vocab_hit: idx.vocab_hit(f), matched: m.clone() })
-            .collect();
-        classify(&vote(&votes, 2), &views, &|k| idx.slot(k))
+        let has: Vec<bool> = texts.iter().map(|t| !t.trim().is_empty()).collect();
+        let hit: Vec<bool> = forms.iter().map(|f| idx.vocab_hit(f)).collect();
+        let m = match_forms(idx, &forms, &has, max_extra, false);
+        judge(idx, m, &has, &hit, 2).outcome
     }
 
     #[test]

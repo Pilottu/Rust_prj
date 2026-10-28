@@ -1,5 +1,6 @@
 mod audio_config;
 mod capture;
+mod clarify;
 mod config_edit;
 mod dialog;
 mod dsp;
@@ -17,6 +18,7 @@ mod wake;
 use audio_config::{AudioConfig, VadConfig, VotingConfig};
 use sql_pool::SqlConfig;
 use tts::TtsConfig;
+use clarify::ClarifyConfig;
 use wake::{MatchingConfig, WakeConfig};
 use serde::Deserialize;
 use sherpa_onnx::{
@@ -52,6 +54,8 @@ struct Config {
     wake: WakeConfig,
     #[serde(default)]
     matching: MatchingConfig,
+    #[serde(default)]
+    clarify: ClarifyConfig,
 }
 
 #[derive(Deserialize)]
@@ -117,6 +121,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             &tts,
             &config.wake,
             &config.matching,
+            &config.clarify,
             wav.as_deref(),
         );
     }

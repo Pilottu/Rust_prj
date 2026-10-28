@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::state::{CADLink, CADTree, RawItem};
 
@@ -64,7 +64,35 @@ struct TreeIndex<'a> {
 }
 
 /// Строит весь пул. Чистая функция: БД не трогает.
+/// Слово (основа) команды и категория, к которой оно относится по примечанию дерева:
+/// «Локация» (где?), «Объект» (что?), «Команда» (что сделать?).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct VocabEntry {
+    pub stem: String,
+    pub category: String,
+}
+
+/// Категория дерева — первое непустое примечание дерева (как «Локация» на экране).
+pub fn tree_category(tree: &CADTree) -> Option<String> {
+    tree.notes
+        .iter()
+        .filter_map(|n| n.lines().next())
+        .map(str::trim)
+        .find(|n| !n.is_empty())
+        .map(str::to_string)
+}
+
 pub fn build_pool(trees: &[CADTree], links: &[CADLink]) -> Vec<CommandVariant> {
+    build_pool_and_vocab(trees, links).0
+}
+
+/// Пул команд и словарь «слово -> категория». В словарь попадают слова узлов, которые
+/// участвуют в командах (названия, их синонимы-примечания и родители, добавленные для
+/// различения одинаковых названий), с категорией дерева, где лежит узел.
+pub fn build_pool_and_vocab(trees: &[CADTree], links: &[CADLink]) -> (Vec<CommandVariant>, Vec<VocabEntry>) {
+    let categories: HashMap<i32, String> =
+        trees.iter().filter_map(|t| tree_category(t).map(|c| (t.id, c))).collect();
+    let vocab = build_vocab(trees);
     let mut nodes: HashMap<Key, &RawItem> = HashMap::new();
     let mut indexes: HashMap<i32, TreeIndex> = HashMap::new();
     for tree in trees {
@@ -154,7 +182,28 @@ pub fn build_pool(trees: &[CADTree], links: &[CADLink]) -> Vec<CommandVariant> {
             }
         }
     }
-    pool
+    (pool, vocab)
+}
+
+/// Словарь «слово -> категория»: все узлы деревьев, у которых есть примечание-категория:
+/// их названия и синонимы-примечания. Берутся ВСЕ узлы, а не только участвующие в командах:
+/// «ванна» относится к «Локации», даже если света в ванной нет, и слушатель по этому слову
+/// поймёт, что место названо (и ответит «такой команды нет», а не переспросит «Где?»).
+pub fn build_vocab(trees: &[CADTree]) -> Vec<VocabEntry> {
+    let mut vocab: BTreeSet<VocabEntry> = BTreeSet::new();
+    for tree in trees {
+        let Some(category) = tree_category(tree) else { continue };
+        for item in &tree.items {
+            for text in std::iter::once(&item.text).chain(item.notes.iter()) {
+                for stem in vcm_norm::command_form(text).key.split(' ') {
+                    if !stem.is_empty() && stem != vcm_norm::SLOT_MARK {
+                        vocab.insert(VocabEntry { stem: stem.to_string(), category: category.clone() });
+                    }
+                }
+            }
+        }
+    }
+    vocab.into_iter().collect()
 }
 
 /// Все полные варианты команды, начиная с узла `node`. Каждый вариант —
@@ -517,5 +566,98 @@ mod tests {
         let pool = build_pool(&trees, &links);
         let keys: Vec<&str> = pool.iter().map(|v| v.cmd_key.as_str()).collect();
         assert_eq!(keys, vec!["1-10", "1-11"]);
+    }
+
+    // --- словарь категорий --------------------------------------------------------------------
+
+    fn tree_with_note(id: i32, note: &str, items: Vec<RawItem>) -> CADTree {
+        let mut t = tree(id, items);
+        t.notes = if note.is_empty() { vec![] } else { vec![note.to_string()] };
+        t
+    }
+
+    fn has(vocab: &[VocabEntry], stem: &str, category: &str) -> bool {
+        vocab.iter().any(|v| v.stem == stem && v.category == category)
+    }
+
+    #[test]
+    fn category_is_the_first_note_of_the_tree() {
+        assert_eq!(tree_category(&tree_with_note(1, "Локация", vec![])), Some("Локация".to_string()));
+        assert_eq!(tree_category(&tree_with_note(1, "", vec![])), None);
+        let mut t = tree(1, vec![]);
+        t.notes = vec!["  ".into(), "Объект\nвторая строка".into()];
+        assert_eq!(tree_category(&t), Some("Объект".to_string()));
+    }
+
+    #[test]
+    fn vocabulary_maps_command_words_to_tree_categories() {
+        // Локация: Мансарда/спальня и Второй этаж/спальня; Объект: Освещение (синоним «свет»);
+        // Команда: Включить и группа «Триггеры»
+        let trees = vec![
+            tree_with_note(
+                1,
+                "Локация",
+                vec![
+                    item(1, 0, "Мансарда", &[], false),
+                    item(2, 1, "спальня", &[], false),
+                    item(3, 0, "Второй этаж", &[], false),
+                    item(4, 3, "спальня", &[], false),
+                ],
+            ),
+            tree_with_note(2, "Объект", vec![item(10, 0, "Освещение", &["свет"], false)]),
+            tree_with_note(
+                3,
+                "Команда",
+                vec![
+                    item(20, 0, "Триггеры", &[], false),
+                    item(21, 20, "Включить", &[], true),
+                    item(22, 21, "0-100", &[], true),
+                ],
+            ),
+        ];
+        let links = vec![link(1, 3, 21, 2, 10), link(2, 2, 10, 1, 2), link(3, 2, 10, 1, 4)];
+        let (pool, vocab) = build_pool_and_vocab(&trees, &links);
+        assert!(!pool.is_empty());
+        assert!(has(&vocab, "включ", "Команда"));
+        assert!(has(&vocab, "освещен", "Объект"));
+        assert!(has(&vocab, "свет", "Объект"), "синоним тоже относится к категории узла");
+        assert!(has(&vocab, "спальн", "Локация"));
+        assert!(has(&vocab, "мансард", "Локация"));
+        assert!(has(&vocab, "втор", "Локация") && has(&vocab, "этаж", "Локация"));
+        assert!(has(&vocab, "триггер", "Команда"), "группы тоже слова своей категории");
+        assert!(!vocab.iter().any(|v| v.stem == "#"), "слот в словарь не попадает");
+        // без повторов и по порядку
+        let mut sorted = vocab.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted, vocab);
+        // build_pool даёт тот же пул
+        assert_eq!(build_pool(&trees, &links).len(), pool.len());
+    }
+
+    #[test]
+    fn trees_without_a_note_stay_out_of_the_vocabulary() {
+        let trees = vec![
+            tree(1, vec![item(1, 0, "Включить", &[], true)]),
+            tree_with_note(2, "Объект", vec![item(10, 0, "Люстра", &[], false)]),
+        ];
+        let (_, vocab) = build_pool_and_vocab(&trees, &[link(1, 1, 1, 2, 10)]);
+        assert!(has(&vocab, "люстр", "Объект"));
+        assert!(!vocab.iter().any(|v| v.stem == "включ"));
+    }
+
+    #[test]
+    fn a_place_without_any_command_is_still_a_known_place() {
+        // «ванна» есть в дереве Локация, но ни одна команда её не использует
+        let trees = vec![
+            tree_with_note(1, "Локация", vec![item(1, 0, "спальня", &[], false), item(2, 0, "ванна", &["ванная"], false)]),
+            tree_with_note(2, "Объект", vec![item(10, 0, "Люстра", &[], false)]),
+            tree_with_note(3, "Команда", vec![item(20, 0, "Включить", &[], true)]),
+        ];
+        let links = vec![link(1, 3, 20, 2, 10), link(2, 2, 10, 1, 1)];
+        let (pool, vocab) = build_pool_and_vocab(&trees, &links);
+        assert_eq!(pool.len(), 1);
+        assert!(has(&vocab, "ван", "Локация"));
+        assert!(!pool.iter().any(|v| v.match_key.split(' ').any(|w| w == "ван")));
     }
 }

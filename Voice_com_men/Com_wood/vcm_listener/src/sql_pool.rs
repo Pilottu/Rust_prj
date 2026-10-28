@@ -47,6 +47,8 @@ pub struct LoadedPool {
     pub index: CommandIndex,
     /// CmdKey -> референтная фраза (строка с Rang = 0): её видит пользователь при привязке к тегу.
     pub reference: HashMap<String, String>,
+    /// Слова команд по категориям (stem, категория) из dbo.CommandVocab; пусто, если таблицы ещё нет.
+    pub vocab: Vec<(String, String)>,
 }
 
 fn read_string(row: &mut odbc_api::CursorRow<'_>, column: u16) -> Result<String, Box<dyn Error>> {
@@ -88,7 +90,18 @@ pub fn load_pool(config: &SqlConfig) -> Result<LoadedPool, Box<dyn Error>> {
             index.insert(IndexEntry { cmd_key, match_key, slot });
         }
     }
-    Ok(LoadedPool { index, reference })
+
+    // Словарь категорий нужен только для уточняющих вопросов: нет таблицы — просто не уточняем.
+    let mut vocab: Vec<(String, String)> = Vec::new();
+    if let Ok(Some(mut cursor)) = connection.execute("SELECT Stem, Category FROM dbo.CommandVocab", (), None) {
+        while let Ok(Some(mut row)) = cursor.next_row() {
+            let (Ok(stem), Ok(category)) = (read_string(&mut row, 1), read_string(&mut row, 2)) else {
+                continue;
+            };
+            vocab.push((stem, category));
+        }
+    }
+    Ok(LoadedPool { index, reference, vocab })
 }
 
 #[cfg(test)]

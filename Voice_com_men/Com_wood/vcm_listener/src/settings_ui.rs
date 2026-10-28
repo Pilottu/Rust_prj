@@ -87,6 +87,9 @@ fn fill(win: &SettingsWindow, v: &ConfigView, d: &Devices) -> UiChoices {
     win.set_wake_ack(s(&v.wake.ack));
     win.set_wake_min_engines(s(v.wake.min_engines));
     win.set_matching_max_extra(s(v.matching.max_extra_words));
+    win.set_clarify_enabled(v.clarify.enabled);
+    win.set_clarify_window(s(v.clarify.window_s));
+    win.set_clarify_rounds(s(v.clarify.max_rounds));
     win.set_sql_server(s(&v.sql.server));
     win.set_sql_database(s(&v.sql.database));
     win.set_sql_driver(s(&v.sql.driver));
@@ -129,11 +132,16 @@ fn form_of(w: &SettingsWindow, c: &UiChoices) -> HashMap<String, String> {
     put("wake.ack", w.get_wake_ack().to_string());
     put("wake.min_engines", w.get_wake_min_engines().to_string());
     put("matching.max_extra_words", w.get_matching_max_extra().to_string());
+    put("clarify.window_s", w.get_clarify_window().to_string());
+    put("clarify.max_rounds", w.get_clarify_rounds().to_string());
     put("sql.server", w.get_sql_server().to_string());
     put("sql.database", w.get_sql_database().to_string());
     put("sql.driver", w.get_sql_driver().to_string());
     if w.get_tts_enabled() {
         put("tts.enabled", "on".to_string());
+    }
+    if w.get_clarify_enabled() {
+        put("clarify.enabled", "on".to_string());
     }
     if w.get_wake_enabled() {
         put("wake.enabled", "on".to_string());

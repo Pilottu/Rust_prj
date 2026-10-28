@@ -82,6 +82,9 @@ export component SettingsWindow inherits Window {
     in-out property <string> wake-ack;
     in-out property <string> wake-min-engines;
     in-out property <string> matching-max-extra;
+    in-out property <bool> clarify-enabled;
+    in-out property <string> clarify-window;
+    in-out property <string> clarify-rounds;
     in-out property <string> sql-server;
     in-out property <string> sql-database;
     in-out property <string> sql-driver;
@@ -383,6 +386,32 @@ export component SettingsWindow inherits Window {
                         hint: "Из трёх. 1 — мягко (достаточно одного), 2 — строго.";
                         LineEdit {
                             text <=> root.wake-min-engines;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Уточняющие вопросы";
+                        hint: "Если команда не найдена, но слова из команд услышаны, спросить «Что сделать?», «Что?» или «Где?» (по примечаниям деревьев) и подставить ответ.";
+                        CheckBox {
+                            text: "задавать уточняющие вопросы";
+                            checked <=> root.clarify-enabled;
+                        }
+                    }
+                    Row {
+                        label: "Ждать ответ на вопрос, с";
+                        hint: "Сколько секунд ждать ответ без кодового слова.";
+                        LineEdit {
+                            text <=> root.clarify-window;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Вопросов подряд";
+                        hint: "Сколько раз переспрашивать про одну фразу, прежде чем сказать «Такой команды нет.».";
+                        LineEdit {
+                            text <=> root.clarify-rounds;
                             horizontal-stretch: 0;
                             width: 120px;
                         }

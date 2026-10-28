@@ -17,7 +17,8 @@ use sherpa_onnx::{SileroVadModelConfig, VadModelConfig, VoiceActivityDetector, W
 
 use crate::audio_config::{AudioConfig, VadConfig, VotingConfig};
 use crate::capture;
-use crate::dialog::{classify, followup_views, prompt_for, Dialog, EngineView, Outcome, PromptPolicy};
+use crate::clarify::{self, AnswerResult, Clarify, ClarifyConfig, ClarifyPlan, Vocabulary};
+use crate::dialog::{followup_views, judge, match_forms, prompt_for, Dialog, Evaluation, Outcome, PromptPolicy};
 use crate::tts::{Speaker, TtsConfig};
 use crate::dsp::Resampler;
 use crate::engines::{EngineBank, EnginePaths};
@@ -25,7 +26,7 @@ use crate::history::History;
 use crate::sql_pool::{self, SqlConfig};
 use crate::wake::{decide, MatchingConfig, WakeConfig, WakeDecision, WakeState, WakeWords};
 use vcm_norm::{speech_form, CommandIndex, Match, SpeechForm};
-use crate::voting::{vote, EngineVote, Interpretation, Verdict};
+use crate::voting::Verdict;
 
 const SAMPLE_RATE: u32 = 16_000;
 /// Тишина перед фразой: у части моделей первый звук «съедается».
@@ -52,6 +53,9 @@ struct Pipeline {
     wake_words: WakeWords,
     wake_state: WakeState,
     max_extra: usize,
+    vocab: Vocabulary,
+    clarify: Clarify,
+    clarify_cfg: ClarifyConfig,
 }
 
 fn create_vad(model: &str, cfg: &VadConfig) -> Result<VoiceActivityDetector, Box<dyn Error>> {
@@ -84,32 +88,10 @@ impl Pipeline {
             .unwrap_or_else(|| format!("команда {cmd_key}"))
     }
 
-    /// Что движок «услышал» как команду (пустой текст — ничего).
-    fn match_of(&self, text: &str, form: &SpeechForm) -> Match {
-        if text.trim().is_empty() {
-            Match::None
-        } else {
-            self.index.lookup_tolerant(form, self.max_extra)
-        }
-    }
-
     /// Фраза не нам (нет кодового слова) или только кодовое слово: показываем одной строкой.
     fn print_skipped(&self, seconds: f32, texts: &[crate::engines::EngineText], note: &str) {
         let heard = texts.iter().map(|t| t.text.as_str()).find(|t| !t.is_empty()).unwrap_or("—");
         println!("\n[#{}] {:.1} с  {}: «{}»", self.counter, seconds, note, heard);
-    }
-
-    /// Результат движка для голосования.
-    fn interp_of(m: &Match) -> Option<Interpretation> {
-        match m {
-            Match::Exact { cmd_key, number } => {
-                Some(Interpretation { cmd_key: cmd_key.clone(), number: *number })
-            }
-            Match::NeedNumber { cmd_key } => {
-                Some(Interpretation { cmd_key: cmd_key.clone(), number: None })
-            }
-            _ => None,
-        }
     }
 
     /// Пояснение для строки движка на экране.
@@ -227,17 +209,64 @@ impl Pipeline {
 
         let texts = self.bank.recognize(Arc::new(padded));
 
-        // Ждём ли мы число в ответ на прошлый вопрос?
         let now = Instant::now();
-        let pending = self.dialog.active(now);
+        let has_text: Vec<bool> = texts.iter().map(|t| !t.text.trim().is_empty()).collect();
         let text_refs: Vec<&str> = texts.iter().map(|t| t.text.as_str()).collect();
-        let followup = pending.as_ref().and_then(|p| followup_views(&text_refs, p));
-        let answering = followup.is_some();
-
-        // Кодовое слово (на ответ-число оно не требуется).
         let mut forms: Vec<SpeechForm> = texts.iter().map(|t| speech_form(&t.text)).collect();
+
+        // 1. Ответ-число на вопрос «Какое значение?»
+        let num_pending = self.dialog.active(now);
+        let followup = num_pending.as_ref().and_then(|p| followup_views(&text_refs, p));
+        let answering_number = followup.is_some();
+
+        // 2. Ответ на уточняющий вопрос («Где?», «Что?», «Что сделать?»): кодовое слово не нужно
+        if !answering_number {
+            if let Some(cp) = self.clarify.active(now) {
+                forms = forms.iter().map(|f| self.wake_words.strip(f)).collect();
+                let result = clarify::answer(&self.index, &self.vocab, &cp, &forms, &has_text, self.min_agree, self.max_extra);
+                if matches!(result, AnswerResult::Noise) {
+                    self.print_skipped(seconds, &texts, "не ответ на вопрос, жду дальше");
+                    return;
+                }
+                self.print_header(seconds, pre_s, post_s);
+                println!("  (ответ на уточняющий вопрос «{}»)", self.clarify_cfg.question_for(&cp.category));
+                match result {
+                    AnswerResult::Fresh(eval) => {
+                        println!("  Ответ оказался самостоятельной командой");
+                        self.clarify.clear();
+                        self.show_and_finish(&texts, eval);
+                    }
+                    AnswerResult::Merged(eval) => {
+                        println!("  Ответ подставлен в исходную фразу");
+                        self.clarify.clear();
+                        self.show_and_finish(&texts, eval);
+                    }
+                    AnswerResult::Failed { merged, ambiguous } => {
+                        self.print_engines(&texts, &vec![Match::None; texts.len()]);
+                        match clarify::next_step(&self.vocab, &self.clarify_cfg, &cp, &merged, ambiguous) {
+                            ClarifyPlan::Ask { category, question } => {
+                                println!("  Подходит несколько команд или не хватает слов — спрашиваю ещё раз");
+                                let window = Duration::from_secs_f32(self.clarify_cfg.window_s.max(1.0));
+                                self.clarify.ask(merged, category, cp.round + 1, now, window);
+                                self.speak_question(&question);
+                            }
+                            ClarifyPlan::GiveUp => {
+                                println!("  Уточнение не помогло: такой команды нет");
+                                self.clarify.clear();
+                                self.wake_state.close();
+                                self.react(Outcome::NotACommand);
+                            }
+                        }
+                    }
+                    AnswerResult::Noise => {}
+                }
+                return;
+            }
+        }
+
+        // 3. Кодовое слово (на ответ-число оно не требуется)
         let mut woke = false;
-        if !answering {
+        if !answering_number {
             match decide(&self.wake_words, &self.wake_cfg, self.wake_state.is_awake(now), &forms) {
                 WakeDecision::Process { forms: f, woke: w } => {
                     forms = f;
@@ -262,57 +291,65 @@ impl Pipeline {
             }
         }
 
-        let matches: Vec<Match> = match &followup {
-            Some(v) => v.iter().map(|x| x.matched.clone()).collect(),
-            None => texts
-                .iter()
-                .zip(&forms)
-                .map(|(t, f)| self.match_of(&t.text, f))
-                .collect(),
+        // 4. Обычный разбор
+        let (matches, vocab_hit): (Vec<Match>, Vec<bool>) = match &followup {
+            Some(v) => (v.iter().map(|x| x.matched.clone()).collect(), vec![true; texts.len()]),
+            None => (
+                match_forms(&self.index, &forms, &has_text, self.max_extra, false),
+                forms.iter().map(|f| self.index.vocab_hit(f)).collect(),
+            ),
         };
-        let parsed: Vec<(Option<Interpretation>, String)> = matches
-            .iter()
-            .map(|m| (Self::interp_of(m), self.describe(m)))
-            .collect();
-        let views: Vec<EngineView> = texts
-            .iter()
-            .zip(&matches)
-            .zip(&forms)
-            .map(|((t, m), f)| EngineView {
-                has_text: !t.text.trim().is_empty(),
-                vocab_hit: self.index.vocab_hit(f),
-                matched: m.clone(),
-            })
-            .collect();
+        let eval = judge(&self.index, matches, &has_text, &vocab_hit, self.min_agree);
 
-        println!(
-            "\n[#{}] фраза {:.1} с (контекст: {:.2} с до, {:.2} с после)",
-            self.counter, seconds, pre_s, post_s
-        );
-        if answering {
+        // Перед «Такой команды нет.» выясняем, чего не хватает, и спрашиваем.
+        if !answering_number && matches!(eval.outcome, Outcome::NotACommand) {
+            if let ClarifyPlan::Ask { category, question } = clarify::plan(&self.vocab, &self.clarify_cfg, &forms, 0) {
+                self.print_header(seconds, pre_s, post_s);
+                if woke {
+                    println!("  (кодовое слово услышано)");
+                }
+                self.print_engines(&texts, &eval.matches);
+                println!("  Команда не найдена, не хватает: {category} — спрашиваю");
+                self.wake_state.close();
+                let window = Duration::from_secs_f32(self.clarify_cfg.window_s.max(1.0));
+                self.clarify.ask(forms, category, 1, now, window);
+                self.speak_question(&question);
+                return;
+            }
+        }
+
+        self.print_header(seconds, pre_s, post_s);
+        if answering_number {
             println!("  (ответ на вопрос: ждали число)");
         }
         if woke {
             println!("  (кодовое слово услышано)");
         }
-        for (t, (_, note)) in texts.iter().zip(&parsed) {
+        self.show_and_finish(&texts, eval);
+    }
+
+    fn print_header(&self, seconds: f32, pre_s: f32, post_s: f32) {
+        println!(
+            "\n[#{}] фраза {:.1} с (контекст: {:.2} с до, {:.2} с после)",
+            self.counter, seconds, pre_s, post_s
+        );
+    }
+
+    /// Строки движков: текст, время и во что разобран.
+    fn print_engines(&self, texts: &[crate::engines::EngineText], matches: &[Match]) {
+        for (t, m) in texts.iter().zip(matches) {
             println!(
                 "  {:<7} {:>5.2} с  {}  {}",
                 t.engine,
                 t.elapsed.as_secs_f64(),
                 if t.text.is_empty() { "—" } else { t.text.as_str() },
-                if t.text.trim().is_empty() { "" } else { note.as_str() }
+                if t.text.trim().is_empty() { String::new() } else { self.describe(m) }
             );
         }
+    }
 
-        let votes: Vec<EngineVote> = texts
-            .iter()
-            .zip(&parsed)
-            .map(|(t, (interp, _))| EngineVote { engine: t.engine, interpretation: interp.clone() })
-            .collect();
-
-        let verdict = vote(&votes, self.min_agree);
-        match verdict.clone() {
+    fn print_verdict(&self, eval: &Evaluation) {
+        match eval.verdict.clone() {
             Verdict::Accepted { interpretation, agreed, dissent } => {
                 let against = if dissent.is_empty() {
                     String::new()
@@ -325,14 +362,14 @@ impl Pipeline {
                         "  Голосование: команда «{}» ясна ({}/{}), но число {}–{} не услышано — переспросить число",
                         command,
                         agreed.len(),
-                        votes.len(),
+                        eval.views.len(),
                         slot.min,
                         slot.max
                     ),
                     (_, number) => println!(
                         "  Голосование: ПРИНЯТО {}/{} — «{}»{}; согласны: {}{}",
                         agreed.len(),
-                        votes.len(),
+                        eval.views.len(),
                         command,
                         number.map(|n| format!(", значение {n}")).unwrap_or_default(),
                         agreed.join(", "),
@@ -349,14 +386,26 @@ impl Pipeline {
             Verdict::NoAgreement => println!("  Голосование: НЕТ СОГЛАСИЯ — переспросить"),
             Verdict::NothingRecognized => println!("  Голосование: ничего не распознано"),
         }
+    }
 
-        let slot_lookup = |key: &str| self.index.slot(key);
-        let outcome = classify(&verdict, &views, &slot_lookup);
+    /// Показать разбор и голосование, закрыть окно кодового слова и ответить голосом.
+    fn show_and_finish(&mut self, texts: &[crate::engines::EngineText], eval: Evaluation) {
+        self.print_engines(texts, &eval.matches);
+        self.print_verdict(&eval);
         // Окно «слушаю» после кодового слова расходуется на первую настоящую фразу.
-        if !matches!(outcome, Outcome::Silence) {
+        if !matches!(eval.outcome, Outcome::Silence) {
             self.wake_state.close();
         }
-        self.react(outcome);
+        self.react(eval.outcome);
+    }
+
+    fn speak_question(&mut self, question: &str) {
+        if self.speaker.is_enabled() {
+            println!("  Голос: «{question}»");
+            self.say(question);
+        } else {
+            println!("  (озвучка выключена) Спросил бы: «{question}»");
+        }
     }
 }
 
@@ -402,6 +451,7 @@ pub fn run(
     tts: &TtsConfig,
     wake: &WakeConfig,
     matching: &MatchingConfig,
+    clarify_cfg: &ClarifyConfig,
     wav: Option<&Path>,
 ) -> Result<(), Box<dyn Error>> {
     println!("Читаю пул команд из SQL Server ({} / {})...", sql.server, sql.database);
@@ -459,7 +509,21 @@ pub fn run(
         wake_words: WakeWords::new(&wake.words),
         wake_state: WakeState::default(),
         max_extra: matching.max_extra_words,
+        vocab: Vocabulary::new(&pool.vocab, &clarify_cfg.order),
+        clarify: Clarify::new(),
+        clarify_cfg: clarify_cfg.clone(),
     };
+    if clarify_cfg.enabled {
+        if pipeline.vocab.is_empty() {
+            println!("ВНИМАНИЕ: словарь категорий пуст (запустите основную программу и задайте деревьям примечания «Локация», «Объект», «Команда») — уточняющие вопросы выключены.");
+        } else {
+            println!(
+                "Категории для уточняющих вопросов: {} (слов: {}).",
+                pipeline.vocab.categories().join(", "),
+                pipeline.vocab.len()
+            );
+        }
+    }
     if wake.enabled {
         if pipeline.wake_words.is_empty() {
             println!("ВНИМАНИЕ: кодовое слово включено, но список слов пуст — фразы разбираются без него.");

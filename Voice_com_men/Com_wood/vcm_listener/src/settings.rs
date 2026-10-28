@@ -12,6 +12,7 @@ use serde::Deserialize;
 
 use crate::audio_config::{AudioConfig, ChannelMode, VadConfig, VotingConfig};
 use crate::capture::{self, InputDeviceInfo};
+use crate::clarify::ClarifyConfig;
 use crate::playback::{self, OutputDeviceInfo};
 use crate::config_edit::{set_value, toml_float, toml_string, toml_string_array};
 use crate::sql_pool::SqlConfig;
@@ -43,6 +44,7 @@ pub struct ConfigView {
     pub tts: TtsConfig,
     pub wake: WakeConfig,
     pub matching: MatchingConfig,
+    pub clarify: ClarifyConfig,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -170,6 +172,13 @@ pub fn read_form(form: &HashMap<String, String>) -> Result<ConfigView, String> {
         matching: MatchingConfig {
             max_extra_words: int(form, "matching.max_extra_words", "Лишних слов во фразе", 0, 6)? as usize,
         },
+        clarify: ClarifyConfig {
+            enabled: flag(form, "clarify.enabled"),
+            window_s: float(form, "clarify.window_s", "Ждать ответ на вопрос, с", 1.0, 60.0)?,
+            max_rounds: int(form, "clarify.max_rounds", "Вопросов подряд", 1, 6)? as usize,
+            // порядок и тексты вопросов в окне не правятся: они остаются в файле как есть
+            ..ClarifyConfig::default()
+        },
         tts: TtsConfig {
             enabled: flag(form, "tts.enabled"),
             engine: match text(form, "tts.engine") {
@@ -216,6 +225,9 @@ pub fn apply(v: &ConfigView, old: &str) -> String {
     set("wake", "ack", toml_string(&v.wake.ack));
     set("wake", "min_engines", v.wake.min_engines.to_string());
     set("matching", "max_extra_words", v.matching.max_extra_words.to_string());
+    set("clarify", "enabled", v.clarify.enabled.to_string());
+    set("clarify", "window_s", toml_float(v.clarify.window_s as f64));
+    set("clarify", "max_rounds", v.clarify.max_rounds.to_string());
     set("sql", "server", toml_string(&v.sql.server));
     set("sql", "database", toml_string(&v.sql.database));
     set("sql", "driver", toml_string(&v.sql.driver));
@@ -421,7 +433,7 @@ mod tests {
             ("tts.output_device", ""), ("tts.engine", "auto"), ("tts.model_dir", "vits-piper-ru_RU-irina-medium"),
             ("tts.speaker_id", "0"), ("tts.speed", "1"), ("tts.say_unclear", "on"), ("tts.rate", "0"), ("tts.volume", "100"), ("tts.greeting", "Готов."),
             ("tts.answer_window_s", "8"), ("tts.echo_tail_s", "0.4"), ("sql.server", "localhost\\TEW_SQLEXPRESS"),
-            ("wake.window_s", "6"), ("wake.ack", "Слушаю."), ("wake.min_engines", "1"), ("matching.max_extra_words", "2"),
+            ("wake.window_s", "6"), ("wake.ack", "Слушаю."), ("wake.min_engines", "1"), ("matching.max_extra_words", "2"), ("clarify.enabled", "on"), ("clarify.window_s", "8"), ("clarify.max_rounds", "3"),
             ("sql.database", "vcm_state"), ("sql.driver", "ODBC Driver 17 for SQL Server"), ("sql.trusted_connection", "on"),
         ]
         .iter()
@@ -515,6 +527,35 @@ mod tests {
         assert!(back.wake.enabled);
         assert_eq!(back.wake.words, vec!["Дом", "Нафаня"]);
         assert_eq!(back.matching.max_extra_words, 3);
+    }
+
+    #[test]
+    fn clarify_settings_are_saved_without_touching_custom_questions() {
+        let original = format!("{SAMPLE}\n[clarify]\nenabled = true\norder = [\"Локация\", \"Объект\"]\n\n[clarify.questions]\n\"локация\" = \"Где именно?\"\n");
+        let path = temp_config("clarify", &original);
+        let v = read_form(&full_form(&[("clarify.window_s", "12"), ("clarify.max_rounds", "2")])).unwrap();
+        assert!(v.clarify.enabled);
+        assert_eq!(v.clarify.max_rounds, 2);
+        save(&path, &v).unwrap();
+        let after = fs::read_to_string(&path).unwrap();
+        assert!(after.contains("window_s = 12.0"));
+        assert!(after.contains("max_rounds = 2"));
+        // свои вопросы и порядок категорий остались
+        assert!(after.contains("\"локация\" = \"Где именно?\""));
+        assert!(after.contains("order = [\"Локация\", \"Объект\"]"));
+        let back: ConfigView = toml::from_str(&after).unwrap();
+        assert_eq!(back.clarify.question_for("Локация"), "Где именно?");
+        assert_eq!(back.clarify.order, vec!["Локация", "Объект"]);
+        // выключатель и проверки диапазонов
+        let off = read_form(&{ let mut f = full_form(&[]); f.remove("clarify.enabled"); f }).unwrap();
+        assert!(!off.clarify.enabled);
+        for (key, bad, label) in [("clarify.max_rounds", "9", "Вопросов"), ("clarify.window_s", "0", "Ждать ответ")] {
+            let err = read_form(&full_form(&[(key, bad)])).unwrap_err();
+            assert!(err.contains(label), "{key}: {err}");
+        }
+        // старый конфиг без секции: уточнение включено по умолчанию
+        let old: ConfigView = toml::from_str("[tts]\nenabled = true\n").unwrap();
+        assert!(old.clarify.enabled);
     }
 
     #[test]

@@ -72,6 +72,15 @@ impl SpeechForm {
         SpeechForm { key, number, key_without_number, stems }
     }
 
+    /// Объединение двух фраз (например, исходной и уточнения): основы складываются,
+    /// число берётся из уточнения, а если там его нет — из исходной.
+    pub fn merged(&self, other: &SpeechForm) -> SpeechForm {
+        let mut stems = self.stems.clone();
+        stems.extend(other.stems.iter().cloned());
+        let number = other.number.or(self.number);
+        SpeechForm::from_stems(stems, number)
+    }
+
     /// Та же фраза без перечисленных основ (например, без кодового слова).
     /// Число сохраняется, если метка `#` не удалялась.
     pub fn without(&self, remove: &HashSet<String>) -> SpeechForm {
@@ -413,6 +422,39 @@ impl CommandIndex {
         }
         let Some(best) = best else { return Match::None };
         let entries: Vec<IndexEntry> = found.into_iter().filter(|(e, _)| *e == best).map(|(_, en)| en.clone()).collect();
+        let keys = Self::distinct(&entries);
+        if keys.len() > 1 {
+            return Match::Ambiguous(keys);
+        }
+        let entry = &entries[0];
+        match (entry.slot, speech.number) {
+            (Some(slot), Some(n)) if slot.contains(n) => Match::Exact { cmd_key: entry.cmd_key.clone(), number: Some(n) },
+            (Some(slot), Some(n)) => Match::OutOfRange { cmd_key: entry.cmd_key.clone(), number: n, slot },
+            (Some(_), None) => Match::NeedNumber { cmd_key: entry.cmd_key.clone() },
+            (None, _) => Match::Exact { cmd_key: entry.cmd_key.clone(), number: None },
+        }
+    }
+
+    /// Подбор «по вхождению»: команда, в которой есть ВСЕ слова фразы (команда может быть длиннее).
+    /// Нужен только после уточняющего вопроса: пользователь сам дополнил фразу, поэтому
+    /// единственная подходящая команда принимается. Несколько разных — Ambiguous.
+    pub fn lookup_subset(&self, speech: &SpeechForm) -> Match {
+        let spoken: Vec<&str> = speech.stems.iter().map(String::as_str).filter(|w| *w != SLOT_MARK).collect();
+        if spoken.is_empty() {
+            return Match::None;
+        }
+        let has_number = speech.number.is_some();
+        let entries: Vec<IndexEntry> = self
+            .all
+            .iter()
+            .filter(|(stems, entry)| {
+                spoken.iter().all(|w| stems.iter().any(|s| s == w)) && !(has_number && entry.slot.is_none())
+            })
+            .map(|(_, entry)| entry.clone())
+            .collect();
+        if entries.is_empty() {
+            return Match::None;
+        }
         let keys = Self::distinct(&entries);
         if keys.len() > 1 {
             return Match::Ambiguous(keys);
@@ -809,5 +851,51 @@ mod tests {
         assert_eq!(h.number, Some(50));
         // фраза из одного кодового слова становится пустой
         assert!(speech_form("нафаня").without(&remove).key.is_empty());
+    }
+
+    // --- уточнение: объединение фраз и подбор по вхождению ------------------------------------
+
+    #[test]
+    fn merging_adds_words_and_prefers_the_new_number() {
+        let a = speech_form("включи свет");
+        let b = speech_form("в спальне");
+        let m = a.merged(&b);
+        assert_eq!(m.key, speech_form("включи свет спальня").key);
+        assert_eq!(m.number, None);
+        let c = speech_form("сделай теплый пол").merged(&speech_form("сорок"));
+        assert_eq!(c.number, Some(40));
+        let d = speech_form("сделай теплый пол двадцать").merged(&speech_form("в спальне"));
+        assert_eq!(d.number, Some(20), "число из исходной фразы не теряется");
+        let e = speech_form("сделай двадцать").merged(&speech_form("тридцать"));
+        assert_eq!(e.number, Some(30));
+    }
+
+    #[test]
+    fn subset_lookup_accepts_the_only_command_that_contains_all_words() {
+        let idx = tolerant_index();
+        // «включи освещение в спальне»: в команде есть ещё «второй этаж» — это НЕДОСТАЮЩИЕ слова,
+        // допуск (он про лишние слова) их не прощает, а подбор по вхождению принимает
+        let said = speech_form("включи освещение спальня");
+        assert_eq!(idx.lookup_tolerant(&said, 2), Match::None);
+        assert_eq!(idx.lookup_subset(&said), Match::Exact { cmd_key: "LAMP".into(), number: None });
+        let shorter = speech_form("включи спальня");
+        assert_eq!(idx.lookup_tolerant(&shorter, 0), Match::None, "строго такая фраза не подходит");
+        assert_eq!(idx.lookup_subset(&shorter), Match::Exact { cmd_key: "LAMP".into(), number: None });
+    }
+
+    #[test]
+    fn subset_lookup_with_slot_and_ambiguity() {
+        let idx = tolerant_index();
+        // «сделай громкость» — слова одной команды, число не названо
+        assert_eq!(idx.lookup_subset(&speech_form("сделай громкость")), Match::NeedNumber { cmd_key: "VOL".into() });
+        assert!(matches!(idx.lookup_subset(&speech_form("сделай громкость пятьдесят")), Match::Exact { number: Some(50), .. }));
+        assert!(matches!(idx.lookup_subset(&speech_form("сделай громкость сто пятьдесят")), Match::OutOfRange { .. }));
+        // «сделай» есть у двух разных команд — неоднозначно
+        assert!(matches!(idx.lookup_subset(&speech_form("сделай")), Match::Ambiguous(_)));
+        // число не подходит команде без слота
+        assert_eq!(idx.lookup_subset(&speech_form("включи спальня сорок")), Match::None);
+        // слов, которых нет ни в одной команде
+        assert_eq!(idx.lookup_subset(&speech_form("включи пылесос")), Match::None);
+        assert_eq!(idx.lookup_subset(&speech_form("")), Match::None);
     }
 }
