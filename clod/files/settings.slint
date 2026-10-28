@@ -1,0 +1,517 @@
+// Окно настроек слушателя голосовых команд. Значения полей — строки: пользователь правит
+// текст, а разбор и проверка диапазонов делает Rust (settings.rs).
+import { Button, CheckBox, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+
+// Строка формы: подпись слева, элемент и необязательная подсказка справа.
+component Row inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> hint;
+    spacing: 12px;
+    Text {
+        text: root.label;
+        width: 230px;
+        vertical-alignment: top;
+        wrap: word-wrap;
+    }
+    VerticalLayout {
+        spacing: 2px;
+        @children
+        if root.hint != "": Text {
+            text: root.hint;
+            color: #7a7a7a;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// Раздел с заголовком и линией.
+component Section inherits VerticalLayout {
+    in property <string> title;
+    spacing: 6px;
+    Text {
+        text: root.title;
+        font-size: 15px;
+        font-weight: 700;
+    }
+    Rectangle {
+        height: 1px;
+        background: #b8b8b8;
+    }
+    @children
+}
+
+export component SettingsWindow inherits Window {
+    title: "Настройки слушателя команд";
+    preferred-width: 900px;
+    preferred-height: 760px;
+    min-width: 640px;
+    min-height: 480px;
+
+    // --- значения полей ----------------------------------------------------
+    in-out property <string> models-dir;
+    in-out property <string> audio-device;
+    in-out property <string> audio-channel;
+    in-out property <string> audio-gain-db;
+    in-out property <string> audio-buffer-frames;
+    in-out property <string> vad-threshold;
+    in-out property <string> vad-min-silence;
+    in-out property <string> vad-min-speech;
+    in-out property <string> vad-max-speech;
+    in-out property <string> vad-pre-roll;
+    in-out property <string> vad-post-roll;
+    in-out property <string> voting-min-agree;
+    in-out property <bool> tts-enabled;
+    in-out property <string> tts-engine;
+    in-out property <string> tts-model-dir;
+    in-out property <string> tts-speaker-id;
+    in-out property <string> tts-speed;
+    in-out property <bool> tts-say-unknown;
+    in-out property <bool> tts-say-unclear;
+    in-out property <string> tts-voice;
+    in-out property <string> tts-output-device;
+    in-out property <string> tts-rate;
+    in-out property <string> tts-volume;
+    in-out property <bool> tts-confirm;
+    in-out property <string> tts-greeting;
+    in-out property <string> tts-answer-window;
+    in-out property <string> tts-echo-tail;
+    in-out property <bool> wake-enabled;
+    in-out property <string> wake-words;
+    in-out property <string> wake-window;
+    in-out property <string> wake-ack;
+    in-out property <string> wake-min-engines;
+    in-out property <string> matching-max-extra;
+    in-out property <bool> clarify-enabled;
+    in-out property <string> clarify-window;
+    in-out property <string> clarify-rounds;
+    in-out property <string> sql-server;
+    in-out property <string> sql-database;
+    in-out property <string> sql-driver;
+    in-out property <bool> sql-trusted;
+
+    // --- списки выбора ---------------------------------------------------------
+    in property <[string]> input-devices;
+    in property <[string]> channels;
+    in property <[string]> voices;
+    in property <[string]> outputs;
+    in property <[string]> engines;
+    in property <[string]> tts-models;
+
+    // --- состояние -------------------------------------------------------------
+    in property <string> status;
+    in property <bool> status-ok;
+    in property <bool> busy;
+
+    callback save();
+    callback test-mic();
+    callback test-voice();
+    callback close-window();
+
+    VerticalLayout {
+        ScrollView {
+            VerticalLayout {
+                padding: 16px;
+                spacing: 14px;
+
+                Section {
+                    title: "Звук с микрофона";
+                    Row {
+                        label: "Устройство записи";
+                        hint: "Откуда слушать команды.";
+                        ComboBox {
+                            model: root.input-devices;
+                            current-value <=> root.audio-device;
+                        }
+                    }
+                    Row {
+                        label: "Канал";
+                        hint: "Если микрофон подключён к одному гнезду, auto сам возьмёт нужный.";
+                        ComboBox {
+                            model: root.channels;
+                            current-value <=> root.audio-channel;
+                        }
+                    }
+                    Row {
+                        label: "Усиление, дБ";
+                        hint: "Для линейного входа обычно 0…+20. Речь должна давать −30…−20 dBFS.";
+                        LineEdit {
+                            text <=> root.audio-gain-db;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Буфер, кадров";
+                        hint: "0 — по умолчанию. При «пропусках звука» попробуйте 2048 или 4096.";
+                        LineEdit {
+                            text <=> root.audio-buffer-frames;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                }
+
+                Section {
+                    title: "Детектор речи";
+                    Row {
+                        label: "Порог";
+                        hint: "0.05–0.99. Меньше — чувствительнее (ловит тихое начало фразы).";
+                        LineEdit {
+                            text <=> root.vad-threshold;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Тишина в конце фразы, с";
+                        hint: "Сколько тишины считать концом фразы.";
+                        LineEdit {
+                            text <=> root.vad-min-silence;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Минимальная фраза, с";
+                        hint: "Короче — отбрасывается как щелчок.";
+                        LineEdit {
+                            text <=> root.vad-min-speech;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Максимальная фраза, с";
+                        hint: "Длиннее — режется принудительно.";
+                        LineEdit {
+                            text <=> root.vad-max-speech;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Звук до фразы, с";
+                        hint: "Берётся реальный звук перед фразой (детектор начинает с опозданием).";
+                        LineEdit {
+                            text <=> root.vad-pre-roll;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Звук после фразы, с";
+                        hint: "То же после фразы.";
+                        LineEdit {
+                            text <=> root.vad-post-roll;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Согласных движков";
+                        hint: "Сколько из трёх должны дать одинаковый разбор (обычно 2).";
+                        LineEdit {
+                            text <=> root.voting-min-agree;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                }
+
+                Section {
+                    title: "Голос";
+                    Row {
+                        label: "Озвучка";
+                        hint: "Включить голосовые подсказки.";
+                        CheckBox {
+                            text: "включена";
+                            checked <=> root.tts-enabled;
+                        }
+                    }
+                    Row {
+                        label: "Какой голос";
+                        hint: "auto — нейросетевой, если модель найдена, иначе голос Windows.";
+                        ComboBox {
+                            model: root.engines;
+                            current-value <=> root.tts-engine;
+                        }
+                    }
+                    Row {
+                        label: "Нейросетевая модель";
+                        hint: "Папка с голосом (Piper) внутри папки моделей: .onnx, tokens.txt, espeak-ng-data.";
+                        ComboBox {
+                            model: root.tts-models;
+                            current-value <=> root.tts-model-dir;
+                        }
+                    }
+                    Row {
+                        label: "Скорость нейросетевого голоса";
+                        hint: "1.0 — обычная, больше — быстрее (0.3–3.0).";
+                        LineEdit {
+                            text <=> root.tts-speed;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Номер голоса в модели";
+                        hint: "У русских моделей Piper он один: 0.";
+                        LineEdit {
+                            text <=> root.tts-speaker-id;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Устройство воспроизведения";
+                        hint: "Куда говорить: колонки, наушники. Для обоих голосов.";
+                        ComboBox {
+                            model: root.outputs;
+                            current-value <=> root.tts-output-device;
+                        }
+                    }
+                    Row {
+                        label: "Громкость голоса";
+                        hint: "От 0 до 100.";
+                        LineEdit {
+                            text <=> root.tts-volume;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Говорить «Такой команды нет.»";
+                        hint: "Говорит только если во фразе услышано слово из команд в базе; на чужой разговор молчит.";
+                        CheckBox {
+                            text: "говорить";
+                            checked <=> root.tts-say-unknown;
+                        }
+                    }
+                    Row {
+                        label: "Говорить «Не понял.»";
+                        hint: "Когда движки разошлись или команда неоднозначна.";
+                        CheckBox {
+                            text: "говорить";
+                            checked <=> root.tts-say-unclear;
+                        }
+                    }
+                    Row {
+                        label: "Говорить «Принято.»";
+                        hint: "После каждой выполненной команды.";
+                        CheckBox {
+                            text: "говорить";
+                            checked <=> root.tts-confirm;
+                        }
+                    }
+                    Row {
+                        label: "Фраза при запуске";
+                        hint: "Пусто — молчать.";
+                        LineEdit {
+                            text <=> root.tts-greeting;
+                        }
+                    }
+                    Row {
+                        label: "Ждать ответ-число, с";
+                        hint: "После вопроса «Какое значение?».";
+                        LineEdit {
+                            text <=> root.tts-answer-window;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Пауза после речи, с";
+                        hint: "Столько микрофон не слушает после голоса (эхо колонок).";
+                        LineEdit {
+                            text <=> root.tts-echo-tail;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Голос Windows (запасной)";
+                        hint: "Нужен только если выбран windows. Если у вас нет русских голосов Windows, оставьте как есть.";
+                        ComboBox {
+                            model: root.voices;
+                            current-value <=> root.tts-voice;
+                        }
+                    }
+                    Row {
+                        label: "Скорость голоса Windows";
+                        hint: "От −10 до 10.";
+                        LineEdit {
+                            text <=> root.tts-rate;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                }
+
+                Section {
+                    title: "Кодовое слово и разбор команд";
+                    Row {
+                        label: "Кодовое слово";
+                        hint: "Включено — фразы без кодового слова игнорируются (разговоры в комнате не мешают).";
+                        CheckBox {
+                            text: "требовать кодовое слово";
+                            checked <=> root.wake-enabled;
+                        }
+                    }
+                    Row {
+                        label: "Слова";
+                        hint: "Через запятую: дом, дача, нафаня. Необычные слова распознаются по-разному — впишите варианты написания.";
+                        LineEdit {
+                            text <=> root.wake-words;
+                        }
+                    }
+                    Row {
+                        label: "Ждать команду после слова, с";
+                        hint: "Если сказать только кодовое слово, команду можно произнести следующей фразой.";
+                        LineEdit {
+                            text <=> root.wake-window;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Ответ на кодовое слово";
+                        hint: "Что сказать, когда услышано только кодовое слово. Пусто — молча.";
+                        LineEdit {
+                            text <=> root.wake-ack;
+                        }
+                    }
+                    Row {
+                        label: "Движков, услышавших слово";
+                        hint: "Из трёх. 1 — мягко (достаточно одного), 2 — строго.";
+                        LineEdit {
+                            text <=> root.wake-min-engines;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Уточняющие вопросы";
+                        hint: "Если команда не найдена, но слова из команд услышаны, спросить «Что сделать?», «Что?» или «Где?» (по примечаниям деревьев) и подставить ответ.";
+                        CheckBox {
+                            text: "задавать уточняющие вопросы";
+                            checked <=> root.clarify-enabled;
+                        }
+                    }
+                    Row {
+                        label: "Ждать ответ на вопрос, с";
+                        hint: "Сколько секунд ждать ответ без кодового слова.";
+                        LineEdit {
+                            text <=> root.clarify-window;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Вопросов подряд";
+                        hint: "Сколько раз переспрашивать про одну фразу, прежде чем сказать «Такой команды нет.».";
+                        LineEdit {
+                            text <=> root.clarify-rounds;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                    Row {
+                        label: "Лишних слов во фразе";
+                        hint: "Сколько посторонних слов допускать («…на втором этаже…»). 0 — только точное совпадение.";
+                        LineEdit {
+                            text <=> root.matching-max-extra;
+                            horizontal-stretch: 0;
+                            width: 120px;
+                        }
+                    }
+                }
+
+                Section {
+                    title: "Модели и база данных";
+                    Row {
+                        label: "Папка с моделями";
+                        hint: "Где лежат модели распознавания.";
+                        LineEdit {
+                            text <=> root.models-dir;
+                        }
+                    }
+                    Row {
+                        label: "Сервер SQL";
+                        hint: "Например localhost\\TEW_SQLEXPRESS.";
+                        LineEdit {
+                            text <=> root.sql-server;
+                        }
+                    }
+                    Row {
+                        label: "База данных";
+                        LineEdit {
+                            text <=> root.sql-database;
+                        }
+                    }
+                    Row {
+                        label: "Драйвер ODBC";
+                        LineEdit {
+                            text <=> root.sql-driver;
+                        }
+                    }
+                    Row {
+                        label: "Вход Windows";
+                        hint: "Включено — вход под текущим пользователем Windows.";
+                        CheckBox {
+                            text: "доверенное подключение";
+                            checked <=> root.sql-trusted;
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: #b8b8b8;
+        }
+        VerticalLayout {
+            padding: 10px;
+            spacing: 8px;
+            Text {
+                text: root.status;
+                color: root.status-ok ? #1b7a1b : #b00020;
+                wrap: word-wrap;
+                visible: root.status != "";
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Button {
+                    text: "Сохранить";
+                    primary: true;
+                    enabled: !root.busy;
+                    clicked => {
+                        root.save();
+                    }
+                }
+                Button {
+                    text: "Проверить микрофон (2 с)";
+                    enabled: !root.busy;
+                    clicked => {
+                        root.test-mic();
+                    }
+                }
+                Button {
+                    text: "Проверить голос";
+                    enabled: !root.busy;
+                    clicked => {
+                        root.test-voice();
+                    }
+                }
+                Rectangle { }
+                Button {
+                    text: "Закрыть";
+                    clicked => {
+                        root.close-window();
+                    }
+                }
+            }
+        }
+    }
+}

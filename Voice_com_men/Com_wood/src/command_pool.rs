@@ -82,6 +82,7 @@ pub fn tree_category(tree: &CADTree) -> Option<String> {
         .map(str::to_string)
 }
 
+#[allow(dead_code)]
 pub fn build_pool(trees: &[CADTree], links: &[CADLink]) -> Vec<CommandVariant> {
     build_pool_and_vocab(trees, links).0
 }
@@ -90,8 +91,6 @@ pub fn build_pool(trees: &[CADTree], links: &[CADLink]) -> Vec<CommandVariant> {
 /// участвуют в командах (названия, их синонимы-примечания и родители, добавленные для
 /// различения одинаковых названий), с категорией дерева, где лежит узел.
 pub fn build_pool_and_vocab(trees: &[CADTree], links: &[CADLink]) -> (Vec<CommandVariant>, Vec<VocabEntry>) {
-    let categories: HashMap<i32, String> =
-        trees.iter().filter_map(|t| tree_category(t).map(|c| (t.id, c))).collect();
     let vocab = build_vocab(trees);
     let mut nodes: HashMap<Key, &RawItem> = HashMap::new();
     let mut indexes: HashMap<i32, TreeIndex> = HashMap::new();

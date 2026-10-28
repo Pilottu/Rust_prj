@@ -71,3 +71,8 @@ min_engines = 1
 
 [matching]
 max_extra_words = 2
+
+[clarify]
+enabled = true
+window_s = 8.0
+max_rounds = 3

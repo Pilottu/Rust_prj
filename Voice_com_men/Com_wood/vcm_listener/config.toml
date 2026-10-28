@@ -19,7 +19,7 @@ tokens = "sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16\\tokens.
 [audio]
 # Часть имени устройства записи, регистр не важен. Пусто = устройство по умолчанию
 # device = "UR28M"
-device = "Микрофон (Устройство с поддержкой High Definition Audio)"
+device = "Line (2- Steinberg UR28M)"
 # "auto" — взять более громкий канал, "left", "right" или "mix"
 channel = "auto"
 # Усиление в дБ после выбора канала (для линейного входа обычно 0…+20)
@@ -48,7 +48,7 @@ confirm = true
 greeting = "Готов."
 answer_window_s = 8.0
 echo_tail_s = 0.4000000059604645
-output_device = "24P1W1 (Аудио Intel(R) для дисплеев)"
+output_device = "Voicemeeter Input (VB-Audio Voicemeeter VAIO)"
 engine = "neural"
 model_dir = "vits-piper-ru_RU-irina-medium"
 speaker_id = 0
