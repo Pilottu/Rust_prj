@@ -1,4 +1,4 @@
-https://
+
 https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/src/main.rs
 https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/src/state.rs
 https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/src/tree_ops.rs
@@ -7,6 +7,7 @@ https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/src/win_nat
 https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/src/historian.rs
 https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/src/command_classifier.rs
 https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/src/repository.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/src/command_pool.rs
 
 https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/ui/app.slint
 https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/ui/cad_dialogs.slint
@@ -17,3 +18,25 @@ https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/ui/cad_prop
 https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/ui/cad_tree_block.slint
 https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/ui/cad_types.slint
 https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/ui/cad_workspace.slint
+
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/audio_config.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/capture.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/clarify.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/config_edit.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/dialog.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/dsp.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/engines.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/history.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/listen.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/main.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/playback.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/settings.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/settings_ui.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/sql_pool.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/tts.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/voting.rs
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/src/wake.rs
+
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_listener/ui/settings.slint
+
+https://github.com/Pilottu/Rust_prj/blob/main/Voice_com_men/Com_wood/vcm_norm/src/lib.rs
