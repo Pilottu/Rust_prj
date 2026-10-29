@@ -253,10 +253,10 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
         if let Some(t) = st.trees.iter_mut().find(|t| t.id == tree_id) {
             t.notes.push(text.to_string());
         }
+        update_ui_models(&ui, &st);
         ui.set_properties_notes(ModelRc::from(Rc::new(VecModel::from(build_tree_notes(
             &st, tree_id,
         )))));
-        update_ui_models(&ui, &st);
     });
     let _s = state.clone();
     let _a_w = app_weak.clone();
@@ -268,10 +268,10 @@ pub fn wire_callbacks(app: &AppWindow, state: &Rc<RefCell<AppState>>) {
                 t.notes.remove(note_idx as usize);
             }
         }
+        update_ui_models(&ui, &st);
         ui.set_properties_notes(ModelRc::from(Rc::new(VecModel::from(build_tree_notes(
             &st, tree_id,
         )))));
-        update_ui_models(&ui, &st);
     });
     let _a_w = app_weak.clone();
     app.on_show_tree_menu(move |node_id, tree_id, screen_x, screen_y| {
