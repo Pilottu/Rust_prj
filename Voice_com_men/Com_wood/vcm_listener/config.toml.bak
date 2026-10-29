@@ -64,7 +64,7 @@ trusted_connection = true
 
 [wake]
 enabled = true
-words = ["Дом"]
+words = ["На фаня"]
 window_s = 6.0
 ack = "Слушаю."
 min_engines = 1

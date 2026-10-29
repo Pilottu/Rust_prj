@@ -4,7 +4,10 @@
 // выясняет, КАКИХ категорий не хватает (категория — примечание дерева: «Локация» — где?,
 // «Объект» — что?, «Команда» — что сделать?), спрашивает об этом и ждёт ответ, как после
 // кодового слова. Ответ подставляется в исходную фразу; не получилось — тогда уже
-// «Такой команды нет.». Здесь только чистая логика: без звука и без SQL.
+// «Такой команды нет.». Если же слов названо достаточно, но подходят несколько команд
+// («одинаковых локаций несколько»: «спальня» и на втором этаже, и на мансарде) — спрашивается
+// «Уточни», и ответ на него обрабатывается по образцу ответа на «Где?».
+// Здесь только чистая логика: без звука и без SQL.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -27,6 +30,9 @@ pub struct ClarifyConfig {
     pub order: Vec<String>,
     /// Свои тексты вопросов: [clarify.questions] локация = "Где именно?"
     pub questions: HashMap<String, String>,
+    /// Вопрос, когда подходит несколько команд («одинаковых локаций несколько»):
+    /// [clarify] ambiguous_question = "Уточните: какая именно?"
+    pub ambiguous_question: String,
 }
 
 impl Default for ClarifyConfig {
@@ -37,6 +43,7 @@ impl Default for ClarifyConfig {
             max_rounds: 3,
             order: vec!["Команда".to_string(), "Объект".to_string(), "Локация".to_string()],
             questions: HashMap::new(),
+            ambiguous_question: "Уточни".to_string(),
         }
     }
 }
@@ -53,6 +60,15 @@ impl ClarifyConfig {
             "объект" => "Что?".to_string(),
             "команда" => "Что сделать?".to_string(),
             _ => format!("Уточните: {category}."),
+        }
+    }
+
+    /// Текст «Уточни», когда подходит несколько команд: свой из конфига, иначе стандартный.
+    pub fn disambiguation_question(&self) -> String {
+        if self.ambiguous_question.trim().is_empty() {
+            "Уточни".to_string()
+        } else {
+            self.ambiguous_question.clone()
         }
     }
 }
@@ -124,12 +140,30 @@ impl Vocabulary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClarifyPlan {
     Ask { category: String, question: String },
+    /// Названо всё, но подходят несколько команд («одинаковых локаций несколько») —
+    /// спросить «Уточни»; ответ обрабатывается по образцу ответа на «Где?».
+    AskDisambiguation { question: String },
     /// Уточнять нечего или нельзя (лимит вопросов): остаётся «Такой команды нет.».
     GiveUp,
 }
 
-/// Что спросить после того, как фраза `forms` не нашла команду. `asked` — сколько вопросов уже задано.
-pub fn plan(vocab: &Vocabulary, cfg: &ClarifyConfig, forms: &[SpeechForm], asked: usize) -> ClarifyPlan {
+/// Подходят несколько команд: все слова фразы входят в несколько разных команд
+/// (как «спальня» на втором этаже и на мансарде). Их различают слова, которых во
+/// фразе ещё нет, — их можно досказать в ответ на «Уточни».
+fn fits_several(index: &CommandIndex, forms: &[SpeechForm]) -> bool {
+    forms.iter().any(|f| matches!(index.lookup_subset(f), Match::Ambiguous(_)))
+}
+
+/// Что спросить после того, как фраза `forms` не нашла команду. `asked` — сколько
+/// вопросов уже задано. Сначала — про недостающую категорию; когда названо всё, но
+/// подходят несколько команд, — «Уточни».
+pub fn plan(
+    index: &CommandIndex,
+    vocab: &Vocabulary,
+    cfg: &ClarifyConfig,
+    forms: &[SpeechForm],
+    asked: usize,
+) -> ClarifyPlan {
     if !cfg.enabled || vocab.is_empty() || asked >= cfg.max_rounds {
         return ClarifyPlan::GiveUp;
     }
@@ -141,7 +175,10 @@ pub fn plan(vocab: &Vocabulary, cfg: &ClarifyConfig, forms: &[SpeechForm], asked
         Some((_, category)) => {
             ClarifyPlan::Ask { category: category.clone(), question: cfg.question_for(category) }
         }
-        None => ClarifyPlan::GiveUp, // названо всё (команда, объект и место), а такой команды нет
+        None if fits_several(index, forms) => {
+            ClarifyPlan::AskDisambiguation { question: cfg.disambiguation_question() }
+        }
+        None => ClarifyPlan::GiveUp, // названо всё, и такая команда одна — её просто нет
     }
 }
 
@@ -151,7 +188,8 @@ pub struct PendingClarify {
     pub forms: Vec<SpeechForm>,
     /// Сколько вопросов уже задано.
     pub round: usize,
-    pub category: String,
+    /// Текст заданного вопроса («Где?», «Что сделать?», «Уточни», …).
+    pub question: String,
     deadline: Instant,
 }
 
@@ -165,8 +203,8 @@ impl Clarify {
         Self::default()
     }
 
-    pub fn ask(&mut self, forms: Vec<SpeechForm>, category: String, round: usize, now: Instant, window: Duration) {
-        self.pending = Some(PendingClarify { forms, round, category, deadline: now + window });
+    pub fn ask(&mut self, forms: Vec<SpeechForm>, question: String, round: usize, now: Instant, window: Duration) {
+        self.pending = Some(PendingClarify { forms, round, question, deadline: now + window });
     }
 
     pub fn active(&mut self, now: Instant) -> Option<PendingClarify> {
@@ -236,15 +274,23 @@ pub fn answer(
 }
 
 /// Что делать после неудачного ответа: спросить ещё или сдаться.
-pub fn next_step(vocab: &Vocabulary, cfg: &ClarifyConfig, pending: &PendingClarify, merged: &[SpeechForm], ambiguous: bool) -> ClarifyPlan {
+pub fn next_step(
+    index: &CommandIndex,
+    vocab: &Vocabulary,
+    cfg: &ClarifyConfig,
+    pending: &PendingClarify,
+    merged: &[SpeechForm],
+    ambiguous: bool,
+) -> ClarifyPlan {
     if pending.round >= cfg.max_rounds {
         return ClarifyPlan::GiveUp;
     }
     if ambiguous {
-        // подходит несколько команд (например, две спальни на разных этажах): спрашиваем ту же категорию ещё раз
-        return ClarifyPlan::Ask { category: pending.category.clone(), question: cfg.question_for(&pending.category) };
+        // Подходит несколько команд («одинаковых локаций несколько»): спрашиваем «Уточни»;
+        // ответ обрабатывается по образцу ответа на «Где?» — см. `answer`.
+        return ClarifyPlan::AskDisambiguation { question: cfg.disambiguation_question() };
     }
-    plan(vocab, cfg, merged, pending.round)
+    plan(index, vocab, cfg, merged, pending.round)
 }
 
 #[cfg(test)]
@@ -297,9 +343,9 @@ mod tests {
         texts.iter().map(|t| !t.trim().is_empty()).collect()
     }
 
-    fn pending(f: Vec<SpeechForm>, category: &str, round: usize) -> PendingClarify {
+    fn pending(f: Vec<SpeechForm>, question: &str, round: usize) -> PendingClarify {
         let mut c = Clarify::new();
-        c.ask(f, category.to_string(), round, Instant::now(), Duration::from_secs(60));
+        c.ask(f, question.to_string(), round, Instant::now(), Duration::from_secs(60));
         c.active(Instant::now()).unwrap()
     }
 
@@ -310,22 +356,26 @@ mod tests {
         let cfg = ClarifyConfig::default();
         let v = real_vocab(&cfg);
         let f = forms(["включи свет", "включи свет", "включи свет"]);
-        assert_eq!(plan(&v, &cfg, &f, 0), ClarifyPlan::Ask { category: "Локация".into(), question: "Где?".into() });
+        assert_eq!(
+            plan(&real_index(), &v, &cfg, &f, 0),
+            ClarifyPlan::Ask { category: "Локация".into(), question: "Где?".into() }
+        );
     }
 
     #[test]
     fn missing_command_and_missing_object_follow_the_configured_order() {
         let cfg = ClarifyConfig::default();
         let v = real_vocab(&cfg);
+        let idx = real_index();
         // только место: сначала «Что сделать?», потом «Что?»
         let only_place = forms(["в спальне", "в спальне", "в спальне"]);
-        assert_eq!(plan(&v, &cfg, &only_place, 0), ClarifyPlan::Ask { category: "Команда".into(), question: "Что сделать?".into() });
+        assert_eq!(plan(&idx, &v, &cfg, &only_place, 0), ClarifyPlan::Ask { category: "Команда".into(), question: "Что сделать?".into() });
         // команда и место названы, объекта нет
         let no_object = forms(["включи в спальне", "включи в спальне", "включи в спальне"]);
-        assert_eq!(plan(&v, &cfg, &no_object, 0), ClarifyPlan::Ask { category: "Объект".into(), question: "Что?".into() });
+        assert_eq!(plan(&idx, &v, &cfg, &no_object, 0), ClarifyPlan::Ask { category: "Объект".into(), question: "Что?".into() });
         // только объект
         let only_object = forms(["громкость", "громкость", "громкость"]);
-        assert_eq!(plan(&v, &cfg, &only_object, 0), ClarifyPlan::Ask { category: "Команда".into(), question: "Что сделать?".into() });
+        assert_eq!(plan(&idx, &v, &cfg, &only_object, 0), ClarifyPlan::Ask { category: "Команда".into(), question: "Что сделать?".into() });
     }
 
     #[test]
@@ -334,7 +384,7 @@ mod tests {
         let v = real_vocab(&cfg);
         // «ванна» есть в «Локации», хотя света в ванной нет: место названо, переспрашивать нечего
         let f = forms(["включи свет в ванной", "включи свет в ванной", "включи свет в ванной"]);
-        assert_eq!(plan(&v, &cfg, &f, 0), ClarifyPlan::GiveUp);
+        assert_eq!(plan(&real_index(), &v, &cfg, &f, 0), ClarifyPlan::GiveUp);
     }
 
     #[test]
@@ -343,7 +393,10 @@ mod tests {
         let v = real_vocab(&cfg);
         // один движок расслышал команду, другой — объект: вместе есть всё, кроме места
         let f = forms(["включи", "свет", "включи свет"]);
-        assert_eq!(plan(&v, &cfg, &f, 0), ClarifyPlan::Ask { category: "Локация".into(), question: "Где?".into() });
+        assert_eq!(
+            plan(&real_index(), &v, &cfg, &f, 0),
+            ClarifyPlan::Ask { category: "Локация".into(), question: "Где?".into() }
+        );
     }
 
     #[test]
@@ -351,14 +404,14 @@ mod tests {
         let mut cfg = ClarifyConfig::default();
         let v = real_vocab(&cfg);
         let f = forms(["включи свет", "включи свет", "включи свет"]);
-        assert_eq!(plan(&v, &cfg, &f, 3), ClarifyPlan::GiveUp, "лимит вопросов");
+        assert_eq!(plan(&real_index(), &v, &cfg, &f, 3), ClarifyPlan::GiveUp, "лимит вопросов");
         cfg.enabled = false;
-        assert_eq!(plan(&v, &cfg, &f, 0), ClarifyPlan::GiveUp);
+        assert_eq!(plan(&real_index(), &v, &cfg, &f, 0), ClarifyPlan::GiveUp);
         cfg.enabled = true;
-        assert_eq!(plan(&Vocabulary::default(), &cfg, &f, 0), ClarifyPlan::GiveUp, "словаря нет — уточнять нечего");
+        assert_eq!(plan(&real_index(), &Vocabulary::default(), &cfg, &f, 0), ClarifyPlan::GiveUp, "словаря нет — уточнять нечего");
         // слова из команд есть, но ни одна категория их не знает
         let unknown = forms(["а", "а", "а"]);
-        assert_eq!(plan(&v, &cfg, &unknown, 0), ClarifyPlan::GiveUp);
+        assert_eq!(plan(&real_index(), &v, &cfg, &unknown, 0), ClarifyPlan::GiveUp);
     }
 
     #[test]
@@ -382,6 +435,37 @@ mod tests {
         assert_eq!(v.categories(), ["Команда", "Локация", "Время", "Зона"]);
     }
 
+    // --- «Уточни»: несколько подходящих команд -------------------------------------------
+
+    #[test]
+    fn several_identical_rooms_ask_to_specify_even_when_all_words_are_named() {
+        let cfg = ClarifyConfig::default();
+        let v = real_vocab(&cfg);
+        let idx = index(&[
+            ("LAMP2", "Включить Свет Второй этаж спальня"),
+            ("LAMP1", "Включить Свет Мансарда спальня"),
+        ]);
+        // всё названо, но какая спальня — неясно
+        let f = forms(["включи свет в спальне", "включи свет в спальне", "включи свет в спальне"]);
+        assert_eq!(plan(&idx, &v, &cfg, &f, 0), ClarifyPlan::AskDisambiguation { question: "Уточни".into() });
+        // место ещё не названо — сначала обычный «Где?»
+        let no_place = forms(["включи свет", "включи свет", "включи свет"]);
+        assert_eq!(plan(&idx, &v, &cfg, &no_place, 0), ClarifyPlan::Ask { category: "Локация".into(), question: "Где?".into() });
+        // ванной в командах нет — переспрашивать нечего
+        let bath = forms(["включи свет в ванной", "включи свет в ванной", "включи свет в ванной"]);
+        assert_eq!(plan(&idx, &v, &cfg, &bath, 0), ClarifyPlan::GiveUp);
+    }
+
+    #[test]
+    fn the_specify_question_is_configurable() {
+        let mut cfg = ClarifyConfig::default();
+        assert_eq!(cfg.disambiguation_question(), "Уточни");
+        cfg.ambiguous_question = "Уточните: какая именно?".to_string();
+        assert_eq!(cfg.disambiguation_question(), "Уточните: какая именно?");
+        cfg.ambiguous_question = "   ".to_string();
+        assert_eq!(cfg.disambiguation_question(), "Уточни", "пустой текст — стандартный вопрос");
+    }
+
     // --- ответ на вопрос ------------------------------------------------------------------
 
     #[test]
@@ -389,7 +473,7 @@ mod tests {
         let cfg = ClarifyConfig::default();
         let (idx, v) = (real_index(), real_vocab(&cfg));
         // «включи свет» -> «Где?» -> «в спальне» -> единственная спальня со светом
-        let p = pending(forms(["включи свет", "включи свет", "включи свет"]), "Локация", 1);
+        let p = pending(forms(["включи свет", "включи свет", "включи свет"]), "Где?", 1);
         let ans = ["в спальне", "в спальне", "в спальне"];
         match answer(&idx, &v, &p, &forms(ans), &has(ans), 2, 2) {
             AnswerResult::Merged(e) => assert_eq!(e.outcome, Outcome::Accepted { cmd_key: "LAMP".into(), number: None }),
@@ -401,7 +485,7 @@ mod tests {
     fn one_engine_mishearing_the_answer_does_not_break_it() {
         let cfg = ClarifyConfig::default();
         let (idx, v) = (real_index(), real_vocab(&cfg));
-        let p = pending(forms(["включи свет", "включи свет", "включи свет"]), "Локация", 1);
+        let p = pending(forms(["включи свет", "включи свет", "включи свет"]), "Где?", 1);
         let ans = ["в спальне", "в спалне", "в спальне"];
         assert!(matches!(answer(&idx, &v, &p, &forms(ans), &has(ans), 2, 2), AnswerResult::Merged(_)));
     }
@@ -410,7 +494,7 @@ mod tests {
     fn answering_with_a_full_command_runs_that_command_instead() {
         let cfg = ClarifyConfig::default();
         let (idx, v) = (real_index(), real_vocab(&cfg));
-        let p = pending(forms(["включи свет", "включи свет", "включи свет"]), "Локация", 1);
+        let p = pending(forms(["включи свет", "включи свет", "включи свет"]), "Где?", 1);
         let ans = ["сделай теплый пол мансарда спальня сорок"; 3];
         match answer(&idx, &v, &p, &forms(ans), &has(ans), 2, 2) {
             AnswerResult::Fresh(e) => assert_eq!(e.outcome, Outcome::Accepted { cmd_key: "HEAT".into(), number: Some(40) }),
@@ -423,12 +507,12 @@ mod tests {
         let cfg = ClarifyConfig::default();
         let (idx, v) = (real_index(), real_vocab(&cfg));
         // «включи свет» -> «Где?» -> «в зале»: света в зале нет
-        let p = pending(forms(["включи свет", "включи свет", "включи свет"]), "Локация", 1);
+        let p = pending(forms(["включи свет", "включи свет", "включи свет"]), "Где?", 1);
         let ans = ["в зале", "в зале", "в зале"];
         match answer(&idx, &v, &p, &forms(ans), &has(ans), 2, 2) {
             AnswerResult::Failed { merged, ambiguous } => {
                 assert!(!ambiguous);
-                assert_eq!(next_step(&v, &cfg, &p, &merged, ambiguous), ClarifyPlan::GiveUp);
+                assert_eq!(next_step(&idx, &v, &cfg, &p, &merged, ambiguous), ClarifyPlan::GiveUp);
             }
             other => panic!("{other:?}"),
         }
@@ -441,7 +525,7 @@ mod tests {
     fn chatter_and_silence_are_not_answers_and_keep_the_question_open() {
         let cfg = ClarifyConfig::default();
         let (idx, v) = (real_index(), real_vocab(&cfg));
-        let p = pending(forms(["включи свет", "включи свет", "включи свет"]), "Локация", 1);
+        let p = pending(forms(["включи свет", "включи свет", "включи свет"]), "Где?", 1);
         let chat = ["вчера купили новый диван", "вчера купили новый диван", "вчера купили новый диван"];
         assert!(matches!(answer(&idx, &v, &p, &forms(chat), &has(chat), 2, 2), AnswerResult::Noise));
         let silence = ["", "", ""];
@@ -453,14 +537,14 @@ mod tests {
         let cfg = ClarifyConfig::default();
         let (idx, v) = (real_index(), real_vocab(&cfg));
         // «громкость» -> «Что сделать?» -> «сделай» -> команда одна, нужно число
-        let p = pending(forms(["громкость", "громкость", "громкость"]), "Команда", 1);
+        let p = pending(forms(["громкость", "громкость", "громкость"]), "Что сделать?", 1);
         let ans = ["сделай", "сделай", "сделай"];
         match answer(&idx, &v, &p, &forms(ans), &has(ans), 2, 2) {
             AnswerResult::Merged(e) => assert!(matches!(e.outcome, Outcome::AskNumber { ref cmd_key, .. } if cmd_key == "VOL")),
             other => panic!("{other:?}"),
         }
         // «сделай теплый пол» -> «Где?» -> «в спальне на мансарде сорок» -> сразу с числом
-        let p = pending(forms(["сделай теплый пол"; 3]), "Локация", 1);
+        let p = pending(forms(["сделай теплый пол"; 3]), "Где?", 1);
         let ans = ["в спальне мансарды сорок"; 3];
         match answer(&idx, &v, &p, &forms(ans), &has(ans), 2, 2) {
             AnswerResult::Merged(e) => assert_eq!(e.outcome, Outcome::Accepted { cmd_key: "HEAT".into(), number: Some(40) }),
@@ -476,24 +560,31 @@ mod tests {
             ("LAMP1", "Включить Свет Мансарда спальня"),
         ]);
         let v = real_vocab(&cfg);
-        let first = pending(forms(["включи свет"; 3]), "Локация", 1);
+        let first = pending(forms(["включи свет"; 3]), "Где?", 1);
         let ans1 = ["в спальне"; 3];
         let merged = match answer(&idx, &v, &first, &forms(ans1), &has(ans1), 2, 2) {
             AnswerResult::Failed { merged, ambiguous } => {
                 assert!(ambiguous, "две спальни — нужно ещё уточнение");
                 assert_eq!(
-                    next_step(&v, &cfg, &first, &merged, ambiguous),
-                    ClarifyPlan::Ask { category: "Локация".into(), question: "Где?".into() }
+                    next_step(&idx, &v, &cfg, &first, &merged, ambiguous),
+                    ClarifyPlan::AskDisambiguation { question: "Уточни".into() }
                 );
                 merged
             }
             other => panic!("{other:?}"),
         };
-        // второй ответ различает спальни
-        let second = pending(merged, "Локация", 2);
+        // ответ на «Уточни» обрабатывается по образцу ответа на «Где?»: подстановка в исходную фразу
+        let second = pending(merged, "Уточни", 2);
         let ans2 = ["на втором этаже"; 3];
         match answer(&idx, &v, &second, &forms(ans2), &has(ans2), 2, 2) {
             AnswerResult::Merged(e) => assert_eq!(e.outcome, Outcome::Accepted { cmd_key: "LAMP2".into(), number: None }),
+            other => panic!("{other:?}"),
+        }
+        // зеркально: «на мансарде» выбирает другую спальню
+        let second = pending(forms(["включи свет в спальне"; 3]), "Уточни", 2);
+        let ans2 = ["на мансарде"; 3];
+        match answer(&idx, &v, &second, &forms(ans2), &has(ans2), 2, 2) {
+            AnswerResult::Merged(e) => assert_eq!(e.outcome, Outcome::Accepted { cmd_key: "LAMP1".into(), number: None }),
             other => panic!("{other:?}"),
         }
     }
@@ -502,20 +593,20 @@ mod tests {
     fn the_number_of_questions_is_limited() {
         let cfg = ClarifyConfig { max_rounds: 2, ..ClarifyConfig::default() };
         let v = real_vocab(&cfg);
-        let p = pending(forms(["включи свет"; 3]), "Локация", 2);
+        let p = pending(forms(["включи свет"; 3]), "Где?", 2);
         let merged = forms(["включи свет"; 3]);
-        assert_eq!(next_step(&v, &cfg, &p, &merged, true), ClarifyPlan::GiveUp);
-        assert_eq!(next_step(&v, &cfg, &p, &merged, false), ClarifyPlan::GiveUp);
+        assert_eq!(next_step(&real_index(), &v, &cfg, &p, &merged, true), ClarifyPlan::GiveUp);
+        assert_eq!(next_step(&real_index(), &v, &cfg, &p, &merged, false), ClarifyPlan::GiveUp);
     }
 
     #[test]
     fn the_question_expires() {
         let mut c = Clarify::new();
         let t0 = Instant::now();
-        c.ask(vec![], "Локация".into(), 1, t0, Duration::from_secs(8));
+        c.ask(vec![], "Где?".into(), 1, t0, Duration::from_secs(8));
         assert!(c.active(t0 + Duration::from_secs(3)).is_some());
         assert!(c.active(t0 + Duration::from_secs(9)).is_none());
-        c.ask(vec![], "Локация".into(), 1, t0, Duration::from_secs(8));
+        c.ask(vec![], "Где?".into(), 1, t0, Duration::from_secs(8));
         c.clear();
         assert!(c.active(t0).is_none());
     }

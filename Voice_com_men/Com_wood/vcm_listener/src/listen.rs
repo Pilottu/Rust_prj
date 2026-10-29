@@ -229,7 +229,7 @@ impl Pipeline {
                     return;
                 }
                 self.print_header(seconds, pre_s, post_s);
-                println!("  (ответ на уточняющий вопрос «{}»)", self.clarify_cfg.question_for(&cp.category));
+                println!("  (ответ на уточняющий вопрос «{}»)", cp.question);
                 match result {
                     AnswerResult::Fresh(eval) => {
                         println!("  Ответ оказался самостоятельной командой");
@@ -243,19 +243,32 @@ impl Pipeline {
                     }
                     AnswerResult::Failed { merged, ambiguous } => {
                         self.print_engines(&texts, &vec![Match::None; texts.len()]);
-                        match clarify::next_step(&self.vocab, &self.clarify_cfg, &cp, &merged, ambiguous) {
+                        let to_ask = match clarify::next_step(
+                            &self.index,
+                            &self.vocab,
+                            &self.clarify_cfg,
+                            &cp,
+                            &merged,
+                            ambiguous,
+                        ) {
                             ClarifyPlan::Ask { category, question } => {
-                                println!("  Подходит несколько команд или не хватает слов — спрашиваю ещё раз");
-                                let window = Duration::from_secs_f32(self.clarify_cfg.window_s.max(1.0));
-                                self.clarify.ask(merged, category, cp.round + 1, now, window);
-                                self.speak_question(&question);
+                                Some((format!("не хватает слов ({category})"), question))
                             }
-                            ClarifyPlan::GiveUp => {
-                                println!("  Уточнение не помогло: такой команды нет");
-                                self.clarify.clear();
-                                self.wake_state.close();
-                                self.react(Outcome::NotACommand);
+                            ClarifyPlan::AskDisambiguation { question } => {
+                                Some(("подходит несколько команд — уточняю".to_string(), question))
                             }
+                            ClarifyPlan::GiveUp => None,
+                        };
+                        if let Some((why, question)) = to_ask {
+                            println!("  {why} — спрашиваю ещё раз");
+                            let window = Duration::from_secs_f32(self.clarify_cfg.window_s.max(1.0));
+                            self.clarify.ask(merged, question.clone(), cp.round + 1, now, window);
+                            self.speak_question(&question);
+                        } else {
+                            println!("  Уточнение не помогло: такой команды нет");
+                            self.clarify.clear();
+                            self.wake_state.close();
+                            self.react(Outcome::NotACommand);
                         }
                     }
                     AnswerResult::Noise => {}
@@ -303,16 +316,25 @@ impl Pipeline {
 
         // Перед «Такой команды нет.» выясняем, чего не хватает, и спрашиваем.
         if !answering_number && matches!(eval.outcome, Outcome::NotACommand) {
-            if let ClarifyPlan::Ask { category, question } = clarify::plan(&self.vocab, &self.clarify_cfg, &forms, 0) {
+            let to_ask = match clarify::plan(&self.index, &self.vocab, &self.clarify_cfg, &forms, 0) {
+                ClarifyPlan::Ask { category, question } => {
+                    Some((format!("не хватает: {category}"), question))
+                }
+                ClarifyPlan::AskDisambiguation { question } => {
+                    Some(("подходит несколько команд — уточняю".to_string(), question))
+                }
+                ClarifyPlan::GiveUp => None,
+            };
+            if let Some((why, question)) = to_ask {
                 self.print_header(seconds, pre_s, post_s);
                 if woke {
                     println!("  (кодовое слово услышано)");
                 }
                 self.print_engines(&texts, &eval.matches);
-                println!("  Команда не найдена, не хватает: {category} — спрашиваю");
+                println!("  Команда не найдена, {why} — спрашиваю");
                 self.wake_state.close();
                 let window = Duration::from_secs_f32(self.clarify_cfg.window_s.max(1.0));
-                self.clarify.ask(forms, category, 1, now, window);
+                self.clarify.ask(forms, question.clone(), 1, now, window);
                 self.speak_question(&question);
                 return;
             }

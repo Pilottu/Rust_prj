@@ -10,6 +10,7 @@ use odbc_api::{
     Connection, ConnectionOptions, Cursor, Environment, IntoParameter, Nullable, U16String,
 };
 use rusqlite::{Connection as SqliteConnection, OpenFlags};
+use serde::Deserialize;
 
 use crate::state::{AppState, CADLink, CADTree, PersistedAppState, RawItem, RawLink};
 
@@ -703,6 +704,39 @@ fn save_command_pool(
     connection: &Connection<'_>,
     phrases_json: &str,
 ) -> Result<(), Box<dyn Error>> {
+    #[derive(Deserialize)]
+    struct CommandPoolPayload {
+        pool: Vec<CommandPoolRow>,
+        vocab: Vec<CommandVocabRow>,
+    }
+
+    #[derive(Deserialize)]
+    struct CommandVocabRow {
+        #[serde(rename = "s")]
+        stem: String,
+        #[serde(rename = "c")]
+        category: String,
+    }
+
+    #[derive(Deserialize)]
+    struct CommandPoolRow {
+        #[serde(rename = "c")]
+        cmd_key: String,
+        #[serde(rename = "v")]
+        phrase: String,
+        #[serde(rename = "r")]
+        rang: i32,
+        #[serde(rename = "m")]
+        match_key: String,
+        #[serde(rename = "h")]
+        has_slot: i32,
+        #[serde(rename = "a")]
+        slot_min: Option<i32>,
+        #[serde(rename = "b")]
+        slot_max: Option<i32>,
+    }
+
+    let payload: CommandPoolPayload = serde_json::from_str(phrases_json)?;
     connection.set_autocommit(false)?;
     let result = (|| -> Result<(), Box<dyn Error>> {
         execute(connection, "DELETE FROM dbo.CommandPool;")?;
@@ -710,16 +744,40 @@ fn save_command_pool(
             connection,
             "CREATE OR ALTER VIEW dbo.v_CommandReference AS SELECT p.CmdKey, p.Vozmozhnie AS Phrase, p.HasSlot, p.SlotMin, p.SlotMax, b.TagName, b.ValueType FROM dbo.CommandPool AS p LEFT JOIN dbo.CommandBindings AS b ON b.CmdKey = p.CmdKey WHERE p.Rang = 0",
         )?;
-        let json = bind_text(phrases_json);
         execute(connection, "DELETE FROM dbo.CommandVocab;")?;
-        connection.execute(
-            "INSERT INTO dbo.CommandVocab (Stem, Category) SELECT Stem, Category FROM OPENJSON(?, '$.vocab') WITH (Stem NVARCHAR(100) '$.s', Category NVARCHAR(100) '$.c')",
-            (&json,),
-        )?;
-        connection.execute(
-            "INSERT INTO dbo.CommandPool (CmdKey, Vozmozhnie, Rang, MatchKey, HasSlot, SlotMin, SlotMax) SELECT CmdKey, Vozmozhnie, Rang, MatchKey, HasSlot, SlotMin, SlotMax FROM OPENJSON(?, '$.pool') WITH (CmdKey NVARCHAR(450) '$.c', Vozmozhnie NVARCHAR(MAX) '$.v', Rang BIT '$.r', MatchKey NVARCHAR(450) '$.m', HasSlot BIT '$.h', SlotMin INT '$.a', SlotMax INT '$.b')",
-            (&json,),
-        )?;
+        for row in payload.vocab {
+            let stem = bind_text(&row.stem);
+            let category = bind_text(&row.category);
+            connection.execute(
+                "INSERT INTO dbo.CommandVocab (Stem, Category) VALUES (?, ?)",
+                (&stem, &category),
+            )?;
+        }
+        for row in payload.pool {
+            let cmd_key = bind_text(&row.cmd_key);
+            let phrase = bind_text(&row.phrase);
+            let match_key = bind_text(&row.match_key);
+            let slot_min = row
+                .slot_min
+                .map(Nullable::new)
+                .unwrap_or_else(Nullable::null);
+            let slot_max = row
+                .slot_max
+                .map(Nullable::new)
+                .unwrap_or_else(Nullable::null);
+            connection.execute(
+                "INSERT INTO dbo.CommandPool (CmdKey, Vozmozhnie, Rang, MatchKey, HasSlot, SlotMin, SlotMax) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    &cmd_key,
+                    &phrase,
+                    &row.rang,
+                    &match_key,
+                    &row.has_slot,
+                    &slot_min,
+                    &slot_max,
+                ),
+            )?;
+        }
         Ok(())
     })();
 
