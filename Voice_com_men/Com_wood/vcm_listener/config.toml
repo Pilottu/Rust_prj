@@ -76,3 +76,8 @@ max_extra_words = 2
 enabled = true
 window_s = 8.0
 max_rounds = 3
+
+[opc]
+enabled = true
+bit_reset_s = 0   # 0 — не сбрасывать бит
+off_words = ["выключить", "отключить", "погасить"]  # эти команды пишут 0

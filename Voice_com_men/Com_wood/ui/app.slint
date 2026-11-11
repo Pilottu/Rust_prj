@@ -4,6 +4,7 @@ import { CADWorkspace } from "cad_workspace.slint";
 import { NodeMenu, LinkMenu, RootMenu } from "cad_menus.slint";
 import { LinkPropertiesDialog, LinkConfirmDialog, DeleteConfirmDialog } from "cad_dialogs.slint";
 import { NodePropertiesPanel } from "cad_properties_panel.slint";
+import { TagDialog, TagRow } from "tag_dialog.slint";
 
 export component AppWindow inherits Window {
     in_out property <float> scale_factor: 1.0;
@@ -93,7 +94,13 @@ export component AppWindow inherits Window {
     in_out property <float> root_menu_y: 0.0;
     in_out property <int> root_menu_tree_id: -1;
     in_out property <int> root_menu_node_id: -1;
+    in_out property <bool> tags_visible: false;
+    in_out property <[TagRow]> tag_rows: [];
+    in_out property <string> tags_status: "";
 
+    callback tags_open();
+    callback tag_row_changed(int, bool, int);
+    callback tags_save();
     callback toggle_expand(int, int);
     callback finish_rename(int, string, int);
     callback select_item(int, string, int);
@@ -293,6 +300,27 @@ export component AppWindow inherits Window {
             }
         }
     }
+
+    Rectangle {
+    x: 15px;
+    y: (root.height - 110px) / 2;
+    width: 34px;
+    height: 110px;
+    z: 1100;
+    background: #2d2d35;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: #ffffff25;
+    Text {
+        text: "Т\nЭ\nГ";
+        color: #ffffff;
+        font-size: 16px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    TouchArea { clicked => { root.tags_open(); } }
+}
 
     if (root.is_linking_mode) : Rectangle {
         x: 15px;
@@ -623,6 +651,18 @@ export component AppWindow inherits Window {
             root.delete_confirm_visible = false;
             global_keys.focus();
         }
+    }
+        if (root.tags_visible) : TagDialog {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        z: 1500;
+        rows: root.tag_rows;
+        status: root.tags_status;
+        row_changed(i, a, t) => { root.tag_row_changed(i, a, t); }
+        save() => { root.tags_save(); }
+        close() => { root.tags_visible = false; global_keys.focus(); }
     }
 }
 

@@ -24,6 +24,7 @@ use crate::dsp::Resampler;
 use crate::engines::{EngineBank, EnginePaths};
 use crate::history::History;
 use crate::sql_pool::{self, SqlConfig};
+use crate::results::{self, OpcConfig};
 use crate::wake::{decide, MatchingConfig, WakeConfig, WakeDecision, WakeState, WakeWords};
 use vcm_norm::{speech_form, CommandIndex, Match, SpeechForm};
 use crate::voting::Verdict;
@@ -56,6 +57,8 @@ struct Pipeline {
     vocab: Vocabulary,
     clarify: Clarify,
     clarify_cfg: ClarifyConfig,
+    sql: SqlConfig,
+    opc: OpcConfig,
 }
 
 fn create_vad(model: &str, cfg: &VadConfig) -> Result<VoiceActivityDetector, Box<dyn Error>> {
@@ -88,6 +91,35 @@ impl Pipeline {
             .unwrap_or_else(|| format!("команда {cmd_key}"))
     }
 
+      /// Принятая команда -> dbo.CommandResults (её читает OPC-сервер).
+    fn publish_result(&mut self, cmd_key: &str, number: Option<u32>) {
+        if !self.opc.enabled {
+            return;
+        }
+        let phrase = self.reference_of(cmd_key);
+        let bit_on = !results::is_off_command(&phrase, &self.opc.off_words);
+        match results::write_result(&self.sql, cmd_key, number, &phrase, bit_on) {
+            Ok(Some(written)) => {
+                let what = if written.value_type == "bit" {
+                    format!("bit = {}", u8::from(written.bit_on))
+                } else {
+                    written.value_type.clone()
+                };
+                println!("  OPC: «{}» записано ({}), Seq {}", phrase, what, written.seq);
+                if written.value_type == "bit" && written.bit_on && self.opc.bit_reset_s > 0.0 {
+                    results::schedule_bit_reset(
+                        self.sql.clone(),
+                        cmd_key.to_string(),
+                        written.seq,
+                        Duration::from_secs_f32(self.opc.bit_reset_s),
+                    );
+                }
+            }
+            Ok(None) => println!("  OPC: для «{phrase}» тег не привязан или не «в работе» — в SQL ничего не записано"),
+            Err(error) => println!("  OPC: ошибка записи в dbo.CommandResults: {error}"),
+        }
+    }
+    
     /// Фраза не нам (нет кодового слова) или только кодовое слово: показываем одной строкой.
     fn print_skipped(&self, seconds: f32, texts: &[crate::engines::EngineText], note: &str) {
         let heard = texts.iter().map(|t| t.text.as_str()).find(|t| !t.is_empty()).unwrap_or("—");
@@ -124,7 +156,10 @@ impl Pipeline {
                 self.dialog.ask(cmd_key.clone(), *slot, now, self.answer_window)
             }
             // Болтовня рядом не должна сбрасывать вопрос «какое значение?»: он сам истечёт по времени.
-            Outcome::Accepted { .. } => self.dialog.clear(),
+            Outcome::Accepted { cmd_key, number } => {
+                self.dialog.clear();
+                self.publish_result(cmd_key, *number);
+            }
             Outcome::NotACommand | Outcome::Unclear | Outcome::Silence => {}
         }
         if let Some(text) = prompt_for(&outcome, &self.policy) {
@@ -470,6 +505,7 @@ pub fn run(
     vad_cfg: &VadConfig,
     voting: &VotingConfig,
     sql: &SqlConfig,
+    opc: &OpcConfig,
     tts: &TtsConfig,
     wake: &WakeConfig,
     matching: &MatchingConfig,
@@ -534,6 +570,8 @@ pub fn run(
         vocab: Vocabulary::new(&pool.vocab, &clarify_cfg.order),
         clarify: Clarify::new(),
         clarify_cfg: clarify_cfg.clone(),
+        sql: sql.clone(),
+        opc: opc.clone(),
     };
     if clarify_cfg.enabled {
         if pipeline.vocab.is_empty() {

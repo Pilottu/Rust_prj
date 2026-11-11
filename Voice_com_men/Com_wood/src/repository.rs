@@ -272,6 +272,12 @@ IF OBJECT_ID(N'dbo.CommandResults', N'U') IS NULL
         Seq BIGINT NOT NULL DEFAULT 0,
         UpdatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
     );
+    IF COL_LENGTH(N'dbo.CommandBindings', N'Active') IS NULL
+ALTER TABLE dbo.CommandBindings ADD Active BIT NOT NULL
+CONSTRAINT DF_CommandBindings_Active DEFAULT (1) WITH VALUES;
+
+IF COL_LENGTH(N'dbo.CommandResults', N'ValueText') IS NULL
+ALTER TABLE dbo.CommandResults ADD ValueText NVARCHAR(256) NULL;
 IF OBJECT_ID(N'dbo.CommandVocab', N'U') IS NULL
     CREATE TABLE dbo.CommandVocab (
         Stem NVARCHAR(100) NOT NULL,
@@ -984,5 +990,144 @@ pub fn save_persisted_state(state: &AppState) {
             ),
         },
         Err(_) => crate::historian::log("ERROR", "Не удалось получить SQL-соединение"),
+    }
+}
+pub struct TagRowData {
+    pub cmd_key: String,
+    pub phrase: String,
+    pub active: bool,
+    /// 0 = bit, 1 = num, 2 = text
+    pub vtype: i32,
+}
+
+fn vtype_to_str(vtype: i32) -> &'static str {
+    match vtype {
+        1 => "num",
+        2 => "text",
+        _ => "bit",
+    }
+}
+
+fn vtype_from_str(value: &str) -> Option<i32> {
+    match value.trim().to_lowercase().as_str() {
+        "bit" => Some(0),
+        "num" | "number" | "float" => Some(1),
+        "text" | "string" => Some(2),
+        _ => None,
+    }
+}
+
+/// Имя тега из текста команды: KEPServer не любит точки, кавычки и "_" в начале.
+fn tag_name_from_phrase(phrase: &str) -> String {
+    let cleaned: String = phrase
+        .chars()
+        .map(|c| if matches!(c, '.' | '"' | '\\' | '/') { ' ' } else { c })
+        .collect();
+    let joined = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    joined.trim_start_matches('_').chars().take(256).collect()
+}
+
+pub fn load_tag_rows() -> Result<Vec<TagRowData>, Box<dyn Error>> {
+    let Some(connection) = CONNECTION.get() else {
+        return Err("SQL connection is not initialized".into());
+    };
+    let connection = connection
+        .lock()
+        .map_err(|_| "SQL connection lock poisoned")?;
+    let mut rows = Vec::new();
+    if let Some(mut cursor) = connection.execute(
+        "SELECT p.CmdKey, MIN(p.Vozmozhnie), MAX(CAST(p.HasSlot AS INT)), \
+                MAX(CASE WHEN b.CmdKey IS NULL THEN 0 ELSE 1 END), \
+                ISNULL(MAX(b.ValueType), N''), ISNULL(MAX(CAST(b.Active AS INT)), 1) \
+         FROM dbo.CommandPool AS p \
+         LEFT JOIN dbo.CommandBindings AS b ON b.CmdKey = p.CmdKey \
+         WHERE p.Rang = 0 \
+         GROUP BY p.CmdKey \
+         ORDER BY MIN(p.Vozmozhnie)",
+        (),
+    )? {
+        while let Some(mut row) = cursor.next_row()? {
+            let cmd_key = read_string(&mut row, 1)?;
+            let phrase = read_string(&mut row, 2)?;
+            let has_slot = read_i32(&mut row, 3)? != 0;
+            let has_binding = read_i32(&mut row, 4)? != 0;
+            let saved_type = read_string(&mut row, 5)?;
+            let active = read_i32(&mut row, 6)? != 0;
+            let vtype = if has_binding {
+                vtype_from_str(&saved_type).unwrap_or(0)
+            } else if has_slot {
+                1
+            } else {
+                0
+            };
+            rows.push(TagRowData { cmd_key, phrase, active, vtype });
+        }
+    }
+    Ok(rows)
+}
+
+pub fn save_tag_rows(rows: &[TagRowData]) -> Result<(usize, usize), Box<dyn Error>> {
+    if rows.is_empty() {
+        return Ok((0, 0));
+    }
+    let Some(connection) = CONNECTION.get() else {
+        return Err("SQL connection is not initialized".into());
+    };
+    let connection = connection
+        .lock()
+        .map_err(|_| "SQL connection lock poisoned")?;
+    connection.set_autocommit(false)?;
+    let result = (|| -> Result<(usize, usize), Box<dyn Error>> {
+        let mut active_count = 0;
+        for row in rows {
+            let key = bind_text(&row.cmd_key);
+            let tag = bind_text(&tag_name_from_phrase(&row.phrase));
+            let vtype = bind_text(vtype_to_str(row.vtype));
+            let active = i32::from(row.active);
+
+            // Сменился тип — старые значения теряют смысл.
+            connection.execute(
+                "IF EXISTS (SELECT 1 FROM dbo.CommandBindings WHERE CmdKey = ? AND ValueType <> ?) \
+                 UPDATE dbo.CommandResults SET ValueBit = NULL, ValueNum = NULL, ValueText = NULL WHERE CmdKey = ?",
+                (&key, &vtype, &key),
+            )?;
+            // TagName при повторном сохранении не трогаем (его могут править вручную).
+            connection.execute(
+                "UPDATE dbo.CommandBindings SET ValueType = ?, Active = ?, UpdatedAt = SYSUTCDATETIME() WHERE CmdKey = ?; \
+                 IF @@ROWCOUNT = 0 INSERT INTO dbo.CommandBindings (CmdKey, TagName, ValueType, Active) VALUES (?, ?, ?, ?)",
+                (&vtype, &active, &key, &key, &tag, &vtype, &active),
+            )?;
+            if row.active {
+                active_count += 1;
+                connection.execute(
+                    "IF NOT EXISTS (SELECT 1 FROM dbo.CommandResults WHERE CmdKey = ?) \
+                     INSERT INTO dbo.CommandResults (CmdKey, TagName) SELECT CmdKey, TagName FROM dbo.CommandBindings WHERE CmdKey = ?; \
+                     UPDATE r SET r.TagName = b.TagName FROM dbo.CommandResults AS r \
+                     JOIN dbo.CommandBindings AS b ON b.CmdKey = r.CmdKey WHERE r.CmdKey = ? AND r.TagName <> b.TagName",
+                    (&key, &key, &key),
+                )?;
+            } else {
+                connection.execute("DELETE FROM dbo.CommandResults WHERE CmdKey = ?", (&key,))?;
+            }
+        }
+        // Команды, которых больше нет в пуле, из таблиц связи убираем.
+        execute(
+            &connection,
+            "DELETE FROM dbo.CommandResults WHERE CmdKey NOT IN (SELECT CmdKey FROM dbo.CommandPool WHERE Rang = 0); \
+             DELETE FROM dbo.CommandBindings WHERE CmdKey NOT IN (SELECT CmdKey FROM dbo.CommandPool WHERE Rang = 0);",
+        )?;
+        Ok((rows.len(), active_count))
+    })();
+    match result {
+        Ok(counts) => {
+            connection.commit()?;
+            connection.set_autocommit(true)?;
+            Ok(counts)
+        }
+        Err(error) => {
+            let _ = connection.rollback();
+            let _ = connection.set_autocommit(true);
+            Err(error)
+        }
     }
 }

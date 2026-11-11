@@ -8,6 +8,7 @@ mod engines;
 mod history;
 mod listen;
 mod playback;
+mod results;
 mod settings;
 mod settings_ui;
 mod sql_pool;
@@ -17,6 +18,7 @@ mod wake;
 
 use audio_config::{AudioConfig, VadConfig, VotingConfig};
 use sql_pool::SqlConfig;
+use results::OpcConfig;
 use tts::TtsConfig;
 use clarify::ClarifyConfig;
 use wake::{MatchingConfig, WakeConfig};
@@ -48,6 +50,8 @@ struct Config {
     vad: VadConfig,
     #[serde(default)]
     sql: SqlConfig,
+    #[serde(default)]
+    opc: OpcConfig,
     #[serde(default)]
     tts: TtsConfig,
     #[serde(default)]
@@ -118,6 +122,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             &config.vad,
             &config.voting,
             &config.sql,
+            &config.opc,            
             &tts,
             &config.wake,
             &config.matching,

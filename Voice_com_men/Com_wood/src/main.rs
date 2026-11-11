@@ -7,6 +7,7 @@ slint::include_modules!();
 
 mod command_classifier;
 mod command_pool;
+mod tag_ops;
 mod historian;
 mod repository;
 mod state;
@@ -25,6 +26,7 @@ fn main() {
     tree_ops::update_ui_models(&app, &state.borrow());
 
     ui_bridge::wire_callbacks(&app, &state);
+    tag_ops::wire_tag_callbacks(&app, &state);
 
     win_native::fix_window_chrome(app.as_weak());
     win_native::spawn_hotkey_thread(app.as_weak());

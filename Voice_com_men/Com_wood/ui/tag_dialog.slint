@@ -1,0 +1,102 @@
+import { CheckBox, ListView, Button } from "std-widgets.slint";
+
+export struct TagRow {
+    cmd_key: string,
+    phrase: string,
+    active: bool,
+    vtype: int, // 0 = бит, 1 = число, 2 = текст
+}
+
+component TypeChip inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback picked();
+    width: 60px;
+    height: 24px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: #ffffff25;
+    background: root.selected ? #2f6fd6 : #2d2d35;
+    Text {
+        text: root.label;
+        color: #ffffff;
+        font-size: 12px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    TouchArea { clicked => { root.picked(); } }
+}
+
+export component TagDialog inherits Rectangle {
+    in property <[TagRow]> rows;
+    in property <string> status;
+    callback row_changed(int, bool, int);
+    callback save();
+    callback close();
+
+    background: #00000090;
+    TouchArea { }
+
+    Rectangle {
+        width: Math.min(980px, root.width - 60px);
+        height: root.height - 100px;
+        x: (root.width - self.width) / 2;
+        y: 50px;
+        background: #1c1c22;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: #ffffff25;
+
+        VerticalLayout {
+            padding: 14px;
+            spacing: 10px;
+
+            Text {
+                text: "Теги OPC: команды 0-го ранга";
+                color: #ffd700;
+                font-size: 16px;
+                font-weight: 700;
+            }
+
+            ListView {
+                vertical-stretch: 1;
+                for row[i] in root.rows : Rectangle {
+                    height: 34px;
+                    HorizontalLayout {
+                        spacing: 10px;
+                        CheckBox {
+                            text: "в работе";
+                            min-width: 110px;
+                            checked: row.active;
+                            toggled => { root.row_changed(i, self.checked, row.vtype); }
+                        }
+                        Text {
+                            text: row.phrase;
+                            color: #e8e8ee;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        TypeChip { label: "бит";   selected: row.vtype == 0; picked => { root.row_changed(i, row.active, 0); } }
+                        TypeChip { label: "число"; selected: row.vtype == 1; picked => { root.row_changed(i, row.active, 1); } }
+                        TypeChip { label: "текст"; selected: row.vtype == 2; picked => { root.row_changed(i, row.active, 2); } }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 10px;
+                Text {
+                    text: root.status;
+                    color: #aaaab5;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Button { text: "Сохранить"; clicked => { root.save(); } }
+                Button { text: "Закрыть";   clicked => { root.close(); } }
+            }
+        }
+    }
+}
